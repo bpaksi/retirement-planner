@@ -17,6 +17,7 @@ import type * as categorizationRules_queries from "../categorizationRules/querie
 import type * as lib_similarity from "../lib/similarity.js";
 import type * as seed from "../seed.js";
 import type * as transactions_import from "../transactions/import.js";
+import type * as transactions_linking from "../transactions/linking.js";
 import type * as transactions_mutations from "../transactions/mutations.js";
 import type * as transactions_queries from "../transactions/queries.js";
 
@@ -36,6 +37,7 @@ declare const fullApi: ApiFromModules<{
   "lib/similarity": typeof lib_similarity;
   seed: typeof seed;
   "transactions/import": typeof transactions_import;
+  "transactions/linking": typeof transactions_linking;
   "transactions/mutations": typeof transactions_mutations;
   "transactions/queries": typeof transactions_queries;
 }>;

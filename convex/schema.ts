@@ -52,6 +52,8 @@ export default defineSchema({
     tags: v.array(v.string()),
     importBatchId: v.optional(v.string()),
     sourceFile: v.optional(v.string()),
+    linkedTransactionId: v.optional(v.id("transactions")), // Reference to paired transaction for transfers
+    isTransfer: v.optional(v.boolean()), // Explicit flag for inter-account transfers
     createdAt: v.number(),
   })
     .index("by_account", ["accountId"])
@@ -59,7 +61,8 @@ export default defineSchema({
     .index("by_category", ["categoryId"])
     .index("by_flagged", ["isFlagged"])
     .index("by_account_date", ["accountId", "date"])
-    .index("by_import_batch", ["importBatchId"]),
+    .index("by_import_batch", ["importBatchId"])
+    .index("by_linked", ["linkedTransactionId"]),
 
   // ============================================
   // CATEGORIES

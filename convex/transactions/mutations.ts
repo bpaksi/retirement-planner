@@ -1,5 +1,6 @@
 import { mutation } from "../_generated/server";
 import { v } from "convex/values";
+import { Id } from "../_generated/dataModel";
 
 export const create = mutation({
   args: {
@@ -14,6 +15,8 @@ export const create = mutation({
     tags: v.optional(v.array(v.string())),
     importBatchId: v.optional(v.string()),
     sourceFile: v.optional(v.string()),
+    linkedTransactionId: v.optional(v.id("transactions")),
+    isTransfer: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const id = await ctx.db.insert("transactions", {
@@ -28,6 +31,8 @@ export const create = mutation({
       tags: args.tags ?? [],
       importBatchId: args.importBatchId,
       sourceFile: args.sourceFile,
+      linkedTransactionId: args.linkedTransactionId,
+      isTransfer: args.isTransfer ?? false,
       createdAt: Date.now(),
     });
 
@@ -146,6 +151,19 @@ export const bulkUpdateCategory = mutation({
 export const remove = mutation({
   args: { id: v.id("transactions") },
   handler: async (ctx, args) => {
+    const transaction = await ctx.db.get(args.id);
+
+    // If this transaction is linked, unlink the paired transaction
+    if (transaction?.linkedTransactionId) {
+      const linkedTx = await ctx.db.get(transaction.linkedTransactionId);
+      if (linkedTx) {
+        await ctx.db.patch(linkedTx._id, {
+          linkedTransactionId: undefined,
+          isTransfer: false,
+        });
+      }
+    }
+
     await ctx.db.delete(args.id);
     return args.id;
   },
@@ -154,6 +172,31 @@ export const remove = mutation({
 export const bulkRemove = mutation({
   args: { ids: v.array(v.id("transactions")) },
   handler: async (ctx, args) => {
+    // Collect all linked transaction IDs that need to be unlinked
+    const linkedIdsToUnlink = new Set<Id<"transactions">>();
+
+    for (const id of args.ids) {
+      const transaction = await ctx.db.get(id);
+      if (transaction?.linkedTransactionId) {
+        // Only unlink if the linked transaction is not also being deleted
+        if (!args.ids.includes(transaction.linkedTransactionId)) {
+          linkedIdsToUnlink.add(transaction.linkedTransactionId);
+        }
+      }
+    }
+
+    // Unlink paired transactions
+    for (const linkedId of linkedIdsToUnlink) {
+      const linkedTx = await ctx.db.get(linkedId);
+      if (linkedTx) {
+        await ctx.db.patch(linkedTx._id, {
+          linkedTransactionId: undefined,
+          isTransfer: false,
+        });
+      }
+    }
+
+    // Delete the transactions
     for (const id of args.ids) {
       await ctx.db.delete(id);
     }

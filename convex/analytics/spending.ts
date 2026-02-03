@@ -37,11 +37,16 @@ export const getSpendingByCategory = query({
     );
 
     // Split transactions into spending vs transfers
+    // A transaction is a transfer if isTransfer is true OR it has a transfer category
     const spendingTxs = filtered.filter(
-      (t) => !t.categoryId || !transferCategoryIds.has(t.categoryId)
+      (t) =>
+        !t.isTransfer &&
+        (!t.categoryId || !transferCategoryIds.has(t.categoryId))
     );
     const transferTxs = filtered.filter(
-      (t) => t.categoryId && transferCategoryIds.has(t.categoryId)
+      (t) =>
+        t.isTransfer ||
+        (t.categoryId && transferCategoryIds.has(t.categoryId))
     );
 
     // Group spending by category (excludes transfers)
@@ -140,8 +145,19 @@ export const getSpendingTrend = query({
       transactions = await ctx.db.query("transactions").collect();
     }
 
-    // Filter by date range
-    const filtered = transactions.filter((t) => t.date >= startDate);
+    // Get all categories to identify transfer categories
+    const categories = await ctx.db.query("categories").collect();
+    const transferCategoryIds = new Set(
+      categories.filter((c) => c.type === "transfer").map((c) => c._id)
+    );
+
+    // Filter by date range and exclude transfers (both by isTransfer flag and transfer category)
+    const filtered = transactions.filter(
+      (t) =>
+        t.date >= startDate &&
+        !t.isTransfer &&
+        (!t.categoryId || !transferCategoryIds.has(t.categoryId))
+    );
 
     // Group by month
     const monthlyData: Record<
@@ -209,9 +225,27 @@ export const getMonthlyTotals = query({
       transactions = await ctx.db.query("transactions").collect();
     }
 
-    // Filter by date range
+    // Get all categories to identify transfer categories
+    const categories = await ctx.db.query("categories").collect();
+    const transferCategoryIds = new Set(
+      categories.filter((c) => c.type === "transfer").map((c) => c._id)
+    );
+
+    // Filter by date range and exclude transfers (both by isTransfer flag and transfer category)
     const filtered = transactions.filter(
-      (t) => t.date >= startDate && t.date <= endDate
+      (t) =>
+        t.date >= startDate &&
+        t.date <= endDate &&
+        !t.isTransfer &&
+        (!t.categoryId || !transferCategoryIds.has(t.categoryId))
+    );
+
+    // Count transfers separately
+    const transfers = transactions.filter(
+      (t) =>
+        t.date >= startDate &&
+        t.date <= endDate &&
+        (t.isTransfer || (t.categoryId && transferCategoryIds.has(t.categoryId)))
     );
 
     let income = 0;
@@ -225,11 +259,20 @@ export const getMonthlyTotals = query({
       }
     }
 
+    const transferTotal = transfers.reduce(
+      (sum, t) => sum + Math.abs(t.amount),
+      0
+    );
+
     return {
       income,
       expenses,
       net: income - expenses,
       transactionCount: filtered.length,
+      transfers: {
+        total: transferTotal,
+        count: transfers.length,
+      },
     };
   },
 });

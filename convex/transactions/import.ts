@@ -116,6 +116,7 @@ export const importBatch = mutation({
           tags: [],
           importBatchId: batchId,
           sourceFile: args.sourceFile,
+          isTransfer: false,
           createdAt: now,
         });
 
