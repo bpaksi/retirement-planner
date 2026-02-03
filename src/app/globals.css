@@ -191,3 +191,23 @@ body {
 .dark ::-webkit-scrollbar-thumb:hover {
   background: var(--muted-foreground);
 }
+
+/* Pointer cursor for all clickable elements */
+button,
+a,
+[role="button"],
+[role="link"],
+[role="tab"],
+[role="menuitem"],
+[role="option"],
+[onclick],
+input[type="button"],
+input[type="submit"],
+input[type="reset"],
+input[type="checkbox"],
+input[type="radio"],
+select,
+label[for],
+summary {
+  cursor: pointer;
+}
