@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, ReactNode } from "react";
+import { ReactNode, useEffect } from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -8,9 +8,24 @@ interface DialogProps {
   open: boolean;
   onClose: () => void;
   children: ReactNode;
+  className?: string;
 }
 
-export function Dialog({ open, onClose, children }: DialogProps) {
+export function Dialog({ open, onClose, children, className }: DialogProps) {
+  // Handle Escape key
+  useEffect(() => {
+    if (!open) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (
@@ -22,7 +37,10 @@ export function Dialog({ open, onClose, children }: DialogProps) {
         aria-hidden="true"
       />
       {/* Dialog */}
-      <div className="relative z-50 max-h-[85vh] w-full max-w-lg overflow-auto rounded-xl bg-card p-6 shadow-lg animate-in fade-in-0 zoom-in-95">
+      <div className={cn(
+        "relative z-50 max-h-[85vh] w-full max-w-lg overflow-auto rounded-xl bg-card p-6 shadow-lg animate-in fade-in-0 zoom-in-95",
+        className
+      )}>
         {children}
       </div>
     </div>

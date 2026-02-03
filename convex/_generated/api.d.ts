@@ -14,6 +14,7 @@ import type * as analytics_spending from "../analytics/spending.js";
 import type * as categories_queries from "../categories/queries.js";
 import type * as categorizationRules_mutations from "../categorizationRules/mutations.js";
 import type * as categorizationRules_queries from "../categorizationRules/queries.js";
+import type * as lib_similarity from "../lib/similarity.js";
 import type * as seed from "../seed.js";
 import type * as transactions_import from "../transactions/import.js";
 import type * as transactions_mutations from "../transactions/mutations.js";
@@ -32,6 +33,7 @@ declare const fullApi: ApiFromModules<{
   "categories/queries": typeof categories_queries;
   "categorizationRules/mutations": typeof categorizationRules_mutations;
   "categorizationRules/queries": typeof categorizationRules_queries;
+  "lib/similarity": typeof lib_similarity;
   seed: typeof seed;
   "transactions/import": typeof transactions_import;
   "transactions/mutations": typeof transactions_mutations;

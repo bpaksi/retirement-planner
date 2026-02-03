@@ -1,5 +1,6 @@
 import { query } from "../_generated/server";
 import { v } from "convex/values";
+import { calculateSimilarityScore, getMatchLevel } from "../lib/similarity";
 
 export const list = query({
   args: {
@@ -8,6 +9,7 @@ export const list = query({
     endDate: v.optional(v.number()),
     categoryId: v.optional(v.id("categories")),
     flaggedOnly: v.optional(v.boolean()),
+    uncategorizedOnly: v.optional(v.boolean()),
     limit: v.optional(v.number()),
     offset: v.optional(v.number()),
   },
@@ -44,6 +46,9 @@ export const list = query({
     if (args.flaggedOnly && args.accountId) {
       // Need to filter by flagged if we used account index
       filtered = filtered.filter((t) => t.isFlagged);
+    }
+    if (args.uncategorizedOnly) {
+      filtered = filtered.filter((t) => !t.categoryId);
     }
 
     // Sort by date descending
@@ -177,5 +182,74 @@ export const countByAccount = query({
       .collect();
 
     return transactions.length;
+  },
+});
+
+/**
+ * Finds similar uncategorized transactions for batch categorization.
+ *
+ * Returns transactions that are:
+ * 1. Not the target transaction
+ * 2. Uncategorized (no categoryId)
+ * 3. Above the similarity threshold (0.4)
+ *
+ * Results are sorted by similarity score descending.
+ */
+export const findSimilar = query({
+  args: {
+    transactionId: v.id("transactions"),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 10;
+    const SIMILARITY_THRESHOLD = 0.4;
+
+    // Get the target transaction
+    const target = await ctx.db.get(args.transactionId);
+    if (!target) {
+      return [];
+    }
+
+    // Get all uncategorized transactions (excluding target)
+    const allTransactions = await ctx.db.query("transactions").collect();
+    const uncategorized = allTransactions.filter(
+      (t) => !t.categoryId && t._id !== args.transactionId
+    );
+
+    // Score each transaction
+    const scored = uncategorized.map((t) => {
+      const similarityScore = calculateSimilarityScore(
+        { description: target.description, amount: target.amount },
+        { description: t.description, amount: t.amount }
+      );
+      return {
+        ...t,
+        similarityScore,
+        matchLevel: getMatchLevel(similarityScore),
+      };
+    });
+
+    // Filter by threshold, sort by score, take limit
+    const filtered = scored
+      .filter((t) => t.similarityScore >= SIMILARITY_THRESHOLD)
+      .sort((a, b) => b.similarityScore - a.similarityScore)
+      .slice(0, limit);
+
+    // Get accounts for context
+    const accountIds = [...new Set(filtered.map((t) => t.accountId))];
+    const accounts = await Promise.all(accountIds.map((id) => ctx.db.get(id)));
+    const accountMap = new Map(
+      accounts.filter(Boolean).map((a) => [a!._id, a])
+    );
+
+    return filtered.map((t) => ({
+      _id: t._id,
+      description: t.description,
+      amount: t.amount,
+      date: t.date,
+      similarityScore: t.similarityScore,
+      matchLevel: t.matchLevel as "strong" | "good" | "weak",
+      account: accountMap.get(t.accountId),
+    }));
   },
 });

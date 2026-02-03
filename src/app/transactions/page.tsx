@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery } from "convex/react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { api } from "../../../convex/_generated/api";
 import { Id } from "../../../convex/_generated/dataModel";
@@ -32,8 +32,11 @@ import {
   ChevronRight,
   Filter,
   X,
+  CircleSlash,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Dialog } from "@/components/ui/Dialog";
+import { BatchCategoryAssigner } from "@/components/transactions/BatchCategoryAssigner";
 
 export default function TransactionsPage() {
   const searchParams = useSearchParams();
@@ -52,6 +55,7 @@ export default function TransactionsPage() {
     Id<"accounts"> | undefined
   >();
   const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
+  const [showUncategorizedOnly, setShowUncategorizedOnly] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<string | null>(
     null
   );
@@ -79,24 +83,17 @@ export default function TransactionsPage() {
   const transactions = useQuery(api.transactions.queries.list, {
     accountId: selectedAccountId,
     flaggedOnly: showFlaggedOnly || undefined,
+    uncategorizedOnly: showUncategorizedOnly || undefined,
     limit: pageSize,
     offset: page * pageSize,
   });
 
   const accounts = useQuery(api.accounts.queries.list, { activeOnly: true });
   const categories = useQuery(api.categories.queries.list);
-  const updateCategory = useMutation(api.transactions.mutations.updateCategory);
 
-  const handleCategoryUpdate = async (
-    transactionId: Id<"transactions">,
-    categoryId: Id<"categories">
-  ) => {
-    await updateCategory({
-      id: transactionId,
-      categoryId,
-      unflag: true,
-    });
+  const handleCategoryUpdateComplete = (count: number) => {
     setEditingTransaction(null);
+    // Could add a toast notification here showing "Updated {count} transaction(s)"
   };
 
   if (showImportWizard) {
@@ -184,13 +181,25 @@ export default function TransactionsPage() {
                   Flagged Only
                 </Button>
 
-                {(selectedAccountId || showFlaggedOnly) && (
+                <Button
+                  variant={showUncategorizedOnly ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setShowUncategorizedOnly(!showUncategorizedOnly)}
+                >
+                  <CircleSlash
+                    className="w-4 h-4 mr-2"
+                  />
+                  Uncategorized
+                </Button>
+
+                {(selectedAccountId || showFlaggedOnly || showUncategorizedOnly) && (
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => {
                       setSelectedAccountId(undefined);
                       setShowFlaggedOnly(false);
+                      setShowUncategorizedOnly(false);
                     }}
                   >
                     Clear Filters
@@ -241,38 +250,17 @@ export default function TransactionsPage() {
                             {tx.account?.name || "-"}
                           </TableCell>
                           <TableCell>
-                            {editingTransaction === tx._id ? (
-                              <Select
-                                value={tx.categoryId || ""}
-                                onChange={(e) => {
-                                  const value = e.target.value as Id<"categories">;
-                                  if (value) {
-                                    handleCategoryUpdate(tx._id, value);
-                                  }
-                                }}
-                                className="w-full"
-                                autoFocus
-                                onBlur={() => setEditingTransaction(null)}
-                              >
-                                <option value="">Select category...</option>
-                                {categories?.map((cat) => (
-                                  <option key={cat._id} value={cat._id}>
-                                    {cat.name}
-                                  </option>
-                                ))}
-                              </Select>
-                            ) : (
-                              <button
-                                onClick={() => setEditingTransaction(tx._id)}
-                                className={cn(
-                                  "text-sm px-2 py-1 rounded hover:bg-muted transition-colors",
-                                  tx.isFlagged && "text-warning"
-                                )}
-                              >
-                                {tx.category?.name || "Uncategorized"}
-                                {tx.isFlagged && " ?"}
-                              </button>
-                            )}
+                            <button
+                              onClick={() => setEditingTransaction(tx._id)}
+                              className={cn(
+                                "text-sm px-2 py-1 rounded hover:bg-muted transition-colors",
+                                tx.isFlagged && "text-warning",
+                                !tx.category && "text-muted-foreground italic"
+                              )}
+                            >
+                              {tx.category?.name || "Uncategorized"}
+                              {tx.isFlagged && " ?"}
+                            </button>
                           </TableCell>
                           <TableCell
                             className={cn(
@@ -339,6 +327,29 @@ export default function TransactionsPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Category Assignment Dialog */}
+        {(() => {
+          const editingTx = transactions?.transactions.find(
+            (tx) => tx._id === editingTransaction
+          );
+          return (
+            <Dialog
+              open={!!editingTransaction && !!editingTx}
+              onClose={() => setEditingTransaction(null)}
+              className="max-w-[600px] p-0"
+            >
+              {editingTx && categories && (
+                <BatchCategoryAssigner
+                  transaction={editingTx}
+                  categories={categories}
+                  onClose={() => setEditingTransaction(null)}
+                  onComplete={handleCategoryUpdateComplete}
+                />
+              )}
+            </Dialog>
+          );
+        })()}
       </main>
     </div>
   );
