@@ -24,6 +24,7 @@ const DEFAULT_CATEGORIES = [
   { name: "Subscriptions", type: "expense" as const, isEssential: false, color: "#3F51B5", sortOrder: 24 },
   { name: "Personal Care", type: "expense" as const, isEssential: false, color: "#7C4DFF", sortOrder: 25 },
   { name: "Gifts", type: "expense" as const, isEssential: false, color: "#F44336", sortOrder: 26 },
+  { name: "Life Expense", type: "expense" as const, isEssential: false, color: "#78909C", sortOrder: 27 },
   { name: "Gas", type: "expense" as const, isEssential: true, color: "#FFC107", sortOrder: 16 },
 
   // Other
@@ -255,6 +256,32 @@ export const checkSeedStatus = query({
       rulesSeeded: rulesCount > 0,
       rulesCount,
     };
+  },
+});
+
+export const addLifeExpenseCategory = mutation({
+  args: {},
+  handler: async (ctx) => {
+    // Check if it already exists
+    const existing = await ctx.db
+      .query("categories")
+      .withIndex("by_name", (q) => q.eq("name", "Life Expense"))
+      .first();
+
+    if (existing) {
+      return { success: false, message: "Life Expense category already exists" };
+    }
+
+    await ctx.db.insert("categories", {
+      name: "Life Expense",
+      type: "expense",
+      isEssential: false,
+      color: "#78909C",
+      sortOrder: 27,
+      isSystem: true,
+    });
+
+    return { success: true, message: "Life Expense category added" };
   },
 });
 

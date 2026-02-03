@@ -49,19 +49,19 @@ Skills are automatically applied when relevant, but you can explicitly invoke th
 
 ```bash
 # Development
-npm run dev              # Start Next.js dev server (port 3000)
-npx convex dev           # Start Convex dev server (run in separate terminal)
+pnpm dev                 # Start Next.js dev server (port 3000)
+pnpm convex dev          # Start Convex dev server (run in separate terminal)
 
 # Both together
-npm run dev & npx convex dev
+pnpm dev & pnpm convex dev
 
 # Production
-npm run build            # Build for production
-npx convex deploy        # Deploy Convex functions
+pnpm build               # Build for production
+pnpm convex deploy       # Deploy Convex functions
 
 # Testing
-npm test                 # Run tests
-npm run lint             # Lint code
+pnpm test                # Run tests
+pnpm lint                # Lint code
 ```
 
 ## Project Structure
@@ -262,8 +262,8 @@ export const newBankParser: CSVParser = {
 3. Install dependencies:
 
    ```bash
-   npm install convex zustand recharts papaparse date-fns
-   npm install -D @types/papaparse
+   pnpm add convex zustand recharts papaparse date-fns
+   pnpm add -D @types/papaparse
    ```
 
 4. Set up Convex schema (copy from ARCHITECTURE.md)
@@ -277,8 +277,8 @@ export const newBankParser: CSVParser = {
 
 6. Start development:
    ```bash
-   npx convex dev &
-   npm run dev
+   pnpm convex dev &
+   pnpm dev
    ```
 
 ## Reference Documents
