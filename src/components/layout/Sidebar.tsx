@@ -28,8 +28,11 @@ const navigation = [
   { name: "Projections", href: "/projections", icon: LineChart },
   { name: "Scenarios", href: "/scenarios", icon: GitBranch },
   { name: "Goals", href: "/goals", icon: Target },
-  { name: "Settings", href: "/settings", icon: Settings },
   { name: "Transactions", href: "/transactions", icon: Receipt },
+];
+
+const bottomNavigation = [
+  { name: "Settings", href: "/settings", icon: Settings },
 ];
 
 export function Sidebar() {
@@ -88,6 +91,30 @@ export function Sidebar() {
           );
         })}
       </nav>
+
+      {/* Bottom navigation (Settings) */}
+      <div className="px-2 pb-2">
+        {bottomNavigation.map((item) => {
+          const isActive = pathname.startsWith(item.href);
+
+          return (
+            <Link
+              key={item.name}
+              href={item.href}
+              className={cn(
+                "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
+                isActive
+                  ? "bg-sidebar-accent text-primary"
+                  : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              )}
+              title={collapsed ? item.name : undefined}
+            >
+              <item.icon className="w-5 h-5 flex-shrink-0" />
+              {!collapsed && <span>{item.name}</span>}
+            </Link>
+          );
+        })}
+      </div>
 
       {/* Collapse toggle */}
       <div className="p-2 border-t border-sidebar-border">
