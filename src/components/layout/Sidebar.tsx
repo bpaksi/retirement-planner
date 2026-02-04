@@ -14,20 +14,22 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  Landmark,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
-  { name: "Transactions", href: "/transactions", icon: Receipt },
-  { name: "Spending", href: "/spending", icon: PieChart },
   { name: "Accounts", href: "/accounts", icon: Wallet },
+  { name: "Liabilities", href: "/liabilities", icon: Landmark },
+  { name: "Spending", href: "/spending", icon: PieChart },
   { name: "Investments", href: "/investments", icon: TrendingUp },
   { name: "Projections", href: "/projections", icon: LineChart },
   { name: "Scenarios", href: "/scenarios", icon: GitBranch },
   { name: "Goals", href: "/goals", icon: Target },
   { name: "Settings", href: "/settings", icon: Settings },
+  { name: "Transactions", href: "/transactions", icon: Receipt },
 ];
 
 export function Sidebar() {

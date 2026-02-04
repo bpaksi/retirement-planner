@@ -19,6 +19,7 @@ export default defineSchema({
       v.literal("money_market"),
       v.literal("credit_card"),
       v.literal("loan"),
+      v.literal("mortgage"),
       v.literal("other")
     ),
     institution: v.string(),
@@ -225,13 +226,20 @@ export default defineSchema({
     ),
     name: v.string(),
     currentBalance: v.number(),
-    interestRate: v.number(),
+    interestRate: v.number(), // Annual rate as decimal (e.g., 0.065 for 6.5%)
     minimumPayment: v.number(),
+    // Amortization fields
+    originalAmount: v.optional(v.number()), // Initial loan principal
+    termMonths: v.optional(v.number()), // Total loan term (e.g., 360 for 30-year)
+    startDate: v.optional(v.number()), // Loan origination date
+    extraPaymentMonthly: v.optional(v.number()), // Extra principal payment per month
     payoffDate: v.optional(v.number()),
     linkedAccountId: v.optional(v.id("accounts")),
     createdAt: v.number(),
     updatedAt: v.number(),
-  }).index("by_type", ["type"]),
+  })
+    .index("by_type", ["type"])
+    .index("by_linked_account", ["linkedAccountId"]),
 
   // ============================================
   // INCOME SOURCES

@@ -16,6 +16,7 @@ export const create = mutation({
       v.literal("money_market"),
       v.literal("credit_card"),
       v.literal("loan"),
+      v.literal("mortgage"),
       v.literal("other")
     ),
     institution: v.string(),
@@ -48,6 +49,13 @@ export const update = mutation({
     name: v.optional(v.string()),
     institution: v.optional(v.string()),
     accountNumberLast4: v.optional(v.string()),
+    taxTreatment: v.optional(
+      v.union(
+        v.literal("taxable"),
+        v.literal("tax_deferred"),
+        v.literal("tax_free")
+      )
+    ),
     notes: v.optional(v.string()),
     isActive: v.optional(v.boolean()),
   },

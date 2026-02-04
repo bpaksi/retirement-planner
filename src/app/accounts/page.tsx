@@ -36,25 +36,76 @@ import {
   Archive,
   AlertTriangle,
   Upload,
+  Home,
+  Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const ACCOUNT_TYPES = [
-  { value: "checking", label: "Checking", icon: Wallet },
-  { value: "savings", label: "Savings", icon: PiggyBank },
-  { value: "credit_card", label: "Credit Card", icon: CreditCard },
-  { value: "401k", label: "401(k)", icon: Building2 },
-  { value: "403b", label: "403(b)", icon: Building2 },
-  { value: "traditional_ira", label: "Traditional IRA", icon: PiggyBank },
-  { value: "roth_ira", label: "Roth IRA", icon: PiggyBank },
-  { value: "roth_401k", label: "Roth 401(k)", icon: Building2 },
-  { value: "brokerage", label: "Brokerage", icon: Building2 },
-  { value: "money_market", label: "Money Market", icon: PiggyBank },
-  { value: "loan", label: "Loan", icon: CreditCard },
-  { value: "other", label: "Other", icon: Wallet },
-] as const;
+type AccountType =
+  | "401k"
+  | "403b"
+  | "traditional_ira"
+  | "roth_ira"
+  | "roth_401k"
+  | "brokerage"
+  | "checking"
+  | "savings"
+  | "money_market"
+  | "credit_card"
+  | "loan"
+  | "mortgage"
+  | "other";
 
-type AccountType = (typeof ACCOUNT_TYPES)[number]["value"];
+type AccountTypeConfig = {
+  value: AccountType;
+  label: string;
+  icon: typeof Building2;
+};
+
+type AccountTypeGroup = {
+  label: string;
+  types: AccountTypeConfig[];
+};
+
+// Grouped account types for the dropdown
+const ACCOUNT_TYPE_GROUPS: AccountTypeGroup[] = [
+  {
+    label: "Investment",
+    types: [
+      { value: "401k", label: "401(k)", icon: Building2 },
+      { value: "403b", label: "403(b)", icon: Building2 },
+      { value: "traditional_ira", label: "Traditional IRA", icon: PiggyBank },
+      { value: "roth_ira", label: "Roth IRA", icon: PiggyBank },
+      { value: "roth_401k", label: "Roth 401(k)", icon: Building2 },
+      { value: "brokerage", label: "Brokerage", icon: Building2 },
+    ],
+  },
+  {
+    label: "Cash & Banking",
+    types: [
+      { value: "checking", label: "Checking", icon: Wallet },
+      { value: "savings", label: "Savings", icon: PiggyBank },
+      { value: "money_market", label: "Money Market", icon: PiggyBank },
+      { value: "credit_card", label: "Credit Card", icon: CreditCard },
+    ],
+  },
+  {
+    label: "Loans",
+    types: [
+      { value: "loan", label: "Loan", icon: CreditCard },
+      { value: "mortgage", label: "Mortgage", icon: Home },
+    ],
+  },
+  {
+    label: "Other",
+    types: [{ value: "other", label: "Other", icon: Wallet }],
+  },
+];
+
+// Flat list for lookups
+const ACCOUNT_TYPES: AccountTypeConfig[] = ACCOUNT_TYPE_GROUPS.flatMap(
+  (group) => group.types
+);
 
 const TAX_TREATMENTS = [
   { value: "taxable", label: "Taxable" },
@@ -86,6 +137,18 @@ function isRetirementAccount(type: AccountType): boolean {
     "roth_ira",
     "roth_401k",
   ].includes(type);
+}
+
+function isLoanAccount(type: AccountType): boolean {
+  return ["loan", "mortgage"].includes(type);
+}
+
+function getLiabilityType(
+  accountType: AccountType
+): "mortgage" | "auto_loan" | "personal_loan" | "other" {
+  if (accountType === "mortgage") return "mortgage";
+  if (accountType === "loan") return "personal_loan";
+  return "other";
 }
 
 // Dropdown Menu Component
@@ -158,6 +221,10 @@ function DropdownMenuItem({
 export default function AccountsPage() {
   const router = useRouter();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [editingAccount, setEditingAccount] = useState<{
+    id: Id<"accounts">;
+    type: AccountType;
+  } | null>(null);
   const [deleteDialogAccount, setDeleteDialogAccount] = useState<{
     id: Id<"accounts">;
     name: string;
@@ -174,6 +241,12 @@ export default function AccountsPage() {
     accountNumberLast4: "",
     taxTreatment: "taxable" as TaxTreatment,
     notes: "",
+    // Loan-specific fields
+    originalAmount: "",
+    interestRate: "",
+    termYears: "",
+    startDate: "",
+    currentBalance: "",
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -184,10 +257,19 @@ export default function AccountsPage() {
 
   const accounts = useQuery(api.accounts.queries.list, {});
   const createAccount = useMutation(api.accounts.mutations.create);
+  const updateAccount = useMutation(api.accounts.mutations.update);
+  const createLiability = useMutation(api.liabilities.mutations.create);
+  const updateLiability = useMutation(api.liabilities.mutations.update);
   const archiveAccount = useMutation(api.accounts.mutations.archive);
   const removeAccount = useMutation(api.accounts.mutations.remove);
   const removeTransactionsByAccount = useMutation(
     api.transactions.mutations.removeByAccount
+  );
+
+  // Get linked liability for editing loan accounts
+  const linkedLiability = useQuery(
+    api.liabilities.queries.getByAccount,
+    editingAccount ? { accountId: editingAccount.id } : "skip"
   );
 
   // Get transaction count for the account in delete dialog
@@ -247,13 +329,68 @@ export default function AccountsPage() {
     });
   };
 
+  const openEditDialog = (account: NonNullable<typeof accounts>[number]) => {
+    setFormData({
+      name: account.name,
+      type: account.type as AccountType,
+      institution: account.institution,
+      accountNumberLast4: account.accountNumberLast4 ?? "",
+      taxTreatment: account.taxTreatment as TaxTreatment,
+      notes: account.notes ?? "",
+      // Loan fields will be populated by effect when linkedLiability loads
+      originalAmount: "",
+      interestRate: "",
+      termYears: "",
+      startDate: "",
+      currentBalance: "",
+    });
+    setEditingAccount({ id: account._id, type: account.type as AccountType });
+  };
+
+  // Populate loan fields when linkedLiability loads
+  useEffect(() => {
+    if (editingAccount && linkedLiability && isLoanAccount(editingAccount.type)) {
+      setFormData((prev) => ({
+        ...prev,
+        originalAmount: linkedLiability.originalAmount?.toString() ?? "",
+        interestRate: linkedLiability.interestRate
+          ? (linkedLiability.interestRate * 100).toString()
+          : "",
+        termYears: linkedLiability.termMonths
+          ? (linkedLiability.termMonths / 12).toString()
+          : "",
+        startDate: linkedLiability.startDate
+          ? new Date(linkedLiability.startDate).toISOString().split("T")[0]
+          : "",
+        currentBalance: linkedLiability.currentBalance?.toString() ?? "",
+      }));
+    }
+  }, [editingAccount, linkedLiability]);
+
+  const closeEditDialog = () => {
+    setEditingAccount(null);
+    setFormData({
+      name: "",
+      type: "checking",
+      institution: "",
+      accountNumberLast4: "",
+      taxTreatment: "taxable",
+      notes: "",
+      originalAmount: "",
+      interestRate: "",
+      termYears: "",
+      startDate: "",
+      currentBalance: "",
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name || !formData.institution) return;
 
     setIsSubmitting(true);
     try {
-      await createAccount({
+      const accountId = await createAccount({
         name: formData.name,
         type: formData.type,
         institution: formData.institution,
@@ -263,6 +400,30 @@ export default function AccountsPage() {
         notes: formData.notes || undefined,
       });
 
+      // Create linked liability for loan/mortgage accounts
+      if (isLoanAccount(formData.type) && formData.originalAmount) {
+        const originalAmount = parseFloat(formData.originalAmount);
+        const interestRate = parseFloat(formData.interestRate) / 100; // Convert from percentage
+        const termMonths = parseInt(formData.termYears) * 12;
+        const startDate = formData.startDate
+          ? new Date(formData.startDate).getTime()
+          : Date.now();
+        const currentBalance = formData.currentBalance
+          ? parseFloat(formData.currentBalance)
+          : originalAmount;
+
+        await createLiability({
+          type: getLiabilityType(formData.type),
+          name: formData.name,
+          originalAmount,
+          currentBalance,
+          interestRate,
+          termMonths,
+          startDate,
+          linkedAccountId: accountId,
+        });
+      }
+
       setShowCreateDialog(false);
       setFormData({
         name: "",
@@ -271,9 +432,60 @@ export default function AccountsPage() {
         accountNumberLast4: "",
         taxTreatment: "taxable",
         notes: "",
+        originalAmount: "",
+        interestRate: "",
+        termYears: "",
+        startDate: "",
+        currentBalance: "",
       });
     } catch (error) {
       console.error("Failed to create account:", error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingAccount || !formData.name || !formData.institution) return;
+
+    setIsSubmitting(true);
+    try {
+      await updateAccount({
+        id: editingAccount.id,
+        name: formData.name,
+        institution: formData.institution,
+        accountNumberLast4: formData.accountNumberLast4 || undefined,
+        taxTreatment: formData.taxTreatment,
+        notes: formData.notes || undefined,
+      });
+
+      // Update linked liability for loan accounts
+      if (isLoanAccount(editingAccount.type) && linkedLiability) {
+        const interestRate = parseFloat(formData.interestRate) / 100;
+        const termMonths = parseInt(formData.termYears) * 12;
+        const startDate = formData.startDate
+          ? new Date(formData.startDate).getTime()
+          : undefined;
+
+        await updateLiability({
+          id: linkedLiability._id,
+          name: formData.name,
+          originalAmount: formData.originalAmount
+            ? parseFloat(formData.originalAmount)
+            : undefined,
+          currentBalance: formData.currentBalance
+            ? parseFloat(formData.currentBalance)
+            : undefined,
+          interestRate: !isNaN(interestRate) ? interestRate : undefined,
+          termMonths: !isNaN(termMonths) ? termMonths : undefined,
+          startDate,
+        });
+      }
+
+      closeEditDialog();
+    } catch (error) {
+      console.error("Failed to update account:", error);
     } finally {
       setIsSubmitting(false);
     }
@@ -345,6 +557,12 @@ export default function AccountsPage() {
                             <MoreVertical className="h-4 w-4 text-muted-foreground" />
                           }
                         >
+                          <DropdownMenuItem
+                            onClick={() => openEditDialog(account)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                            Edit Account
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => handleImportForAccount(account._id)}
                           >
@@ -456,6 +674,26 @@ export default function AccountsPage() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-sm font-medium mb-1">
+                Account Type *
+              </label>
+              <Select
+                value={formData.type}
+                onChange={(e) => handleTypeChange(e.target.value as AccountType)}
+              >
+                {ACCOUNT_TYPE_GROUPS.map((group) => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.types.map((type) => (
+                      <option key={type.value} value={type.value}>
+                        {type.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </Select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">
                 Account Name *
               </label>
               <Input
@@ -466,22 +704,6 @@ export default function AccountsPage() {
                 placeholder="e.g., Chase Checking"
                 required
               />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium mb-1">
-                Account Type *
-              </label>
-              <Select
-                value={formData.type}
-                onChange={(e) => handleTypeChange(e.target.value as AccountType)}
-              >
-                {ACCOUNT_TYPES.map((type) => (
-                  <option key={type.value} value={type.value}>
-                    {type.label}
-                  </option>
-                ))}
-              </Select>
             </div>
 
             <div>
@@ -539,6 +761,104 @@ export default function AccountsPage() {
               </Select>
             </div>
 
+            {/* Loan-specific fields */}
+            {isLoanAccount(formData.type) && (
+              <div className="border-t border-border pt-4 mt-4 space-y-4">
+                <h4 className="text-sm font-medium text-muted-foreground">
+                  Loan Details
+                </h4>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      Original Amount *
+                    </label>
+                    <Input
+                      type="number"
+                      value={formData.originalAmount}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          originalAmount: e.target.value,
+                        })
+                      }
+                      placeholder="250000"
+                      min="0"
+                      step="0.01"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      Current Balance
+                    </label>
+                    <Input
+                      type="number"
+                      value={formData.currentBalance}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          currentBalance: e.target.value,
+                        })
+                      }
+                      placeholder="Leave blank if same as original"
+                      min="0"
+                      step="0.01"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      Interest Rate (%) *
+                    </label>
+                    <Input
+                      type="number"
+                      value={formData.interestRate}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          interestRate: e.target.value,
+                        })
+                      }
+                      placeholder="6.5"
+                      min="0"
+                      max="100"
+                      step="0.001"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      Term (Years) *
+                    </label>
+                    <Input
+                      type="number"
+                      value={formData.termYears}
+                      onChange={(e) =>
+                        setFormData({ ...formData, termYears: e.target.value })
+                      }
+                      placeholder="30"
+                      min="1"
+                      max="50"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1">
+                    Loan Start Date
+                  </label>
+                  <Input
+                    type="date"
+                    value={formData.startDate}
+                    onChange={(e) =>
+                      setFormData({ ...formData, startDate: e.target.value })
+                    }
+                  />
+                </div>
+              </div>
+            )}
+
             <div>
               <label className="block text-sm font-medium mb-1">Notes</label>
               <Input
@@ -560,6 +880,214 @@ export default function AccountsPage() {
               </Button>
               <Button type="submit" disabled={isSubmitting}>
                 {isSubmitting ? "Creating..." : "Create Account"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Account Dialog */}
+      <Dialog open={!!editingAccount} onClose={closeEditDialog}>
+        <DialogCloseButton onClose={closeEditDialog} />
+        <DialogHeader>
+          <DialogTitle>Edit Account</DialogTitle>
+        </DialogHeader>
+        <DialogContent>
+          <form onSubmit={handleEditSubmit} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                Account Type
+              </label>
+              <div className="flex h-10 w-full rounded-lg border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
+                {ACCOUNT_TYPES.find((t) => t.value === formData.type)?.label ??
+                  formData.type}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Account type cannot be changed
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                Account Name *
+              </label>
+              <Input
+                value={formData.name}
+                onChange={(e) =>
+                  setFormData({ ...formData, name: e.target.value })
+                }
+                placeholder="e.g., Chase Checking"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                Institution *
+              </label>
+              <Input
+                value={formData.institution}
+                onChange={(e) =>
+                  setFormData({ ...formData, institution: e.target.value })
+                }
+                placeholder="e.g., Chase, Fidelity, Vanguard"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                Last 4 of Account Number
+              </label>
+              <Input
+                value={formData.accountNumberLast4}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    accountNumberLast4: e.target.value.slice(0, 4),
+                  })
+                }
+                placeholder="1234"
+                maxLength={4}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                Tax Treatment
+              </label>
+              <Select
+                value={formData.taxTreatment}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    taxTreatment: e.target.value as TaxTreatment,
+                  })
+                }
+              >
+                {TAX_TREATMENTS.map((treatment) => (
+                  <option key={treatment.value} value={treatment.value}>
+                    {treatment.label}
+                  </option>
+                ))}
+              </Select>
+            </div>
+
+            {/* Loan-specific fields */}
+            {editingAccount && isLoanAccount(editingAccount.type) && (
+              <div className="border-t border-border pt-4 mt-4 space-y-4">
+                <h4 className="text-sm font-medium text-muted-foreground">
+                  Loan Details
+                </h4>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      Original Amount
+                    </label>
+                    <Input
+                      type="number"
+                      value={formData.originalAmount}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          originalAmount: e.target.value,
+                        })
+                      }
+                      placeholder="250000"
+                      min="0"
+                      step="0.01"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      Current Balance
+                    </label>
+                    <Input
+                      type="number"
+                      value={formData.currentBalance}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          currentBalance: e.target.value,
+                        })
+                      }
+                      placeholder="Current balance"
+                      min="0"
+                      step="0.01"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      Interest Rate (%)
+                    </label>
+                    <Input
+                      type="number"
+                      value={formData.interestRate}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          interestRate: e.target.value,
+                        })
+                      }
+                      placeholder="6.5"
+                      min="0"
+                      max="100"
+                      step="0.001"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      Term (Years)
+                    </label>
+                    <Input
+                      type="number"
+                      value={formData.termYears}
+                      onChange={(e) =>
+                        setFormData({ ...formData, termYears: e.target.value })
+                      }
+                      placeholder="30"
+                      min="1"
+                      max="50"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1">
+                    Loan Start Date
+                  </label>
+                  <Input
+                    type="date"
+                    value={formData.startDate}
+                    onChange={(e) =>
+                      setFormData({ ...formData, startDate: e.target.value })
+                    }
+                  />
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-medium mb-1">Notes</label>
+              <Input
+                value={formData.notes}
+                onChange={(e) =>
+                  setFormData({ ...formData, notes: e.target.value })
+                }
+                placeholder="Optional notes about this account"
+              />
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={closeEditDialog}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isSubmitting}>
+                {isSubmitting ? "Saving..." : "Save Changes"}
               </Button>
             </DialogFooter>
           </form>
