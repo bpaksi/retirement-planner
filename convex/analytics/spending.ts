@@ -1,6 +1,14 @@
 import { query } from "../_generated/server";
 import { v } from "convex/values";
 
+// Account types that should be included in spending analysis
+const SPENDING_ACCOUNT_TYPES = new Set([
+  "credit_card",
+  "checking",
+  "savings",
+  "money_market",
+]);
+
 export const getSpendingByCategory = query({
   args: {
     startDate: v.number(),
@@ -16,7 +24,18 @@ export const getSpendingByCategory = query({
         .withIndex("by_account", (q) => q.eq("accountId", args.accountId!))
         .collect();
     } else {
-      transactions = await ctx.db.query("transactions").collect();
+      // Get all spending accounts (credit_card, checking, savings, money_market)
+      const accounts = await ctx.db.query("accounts").collect();
+      const spendingAccountIds = new Set(
+        accounts
+          .filter((a) => SPENDING_ACCOUNT_TYPES.has(a.type))
+          .map((a) => a._id)
+      );
+
+      const allTransactions = await ctx.db.query("transactions").collect();
+      transactions = allTransactions.filter((t) =>
+        spendingAccountIds.has(t.accountId)
+      );
     }
 
     // Filter by date range and expenses only (negative amounts)
@@ -142,7 +161,18 @@ export const getSpendingTrend = query({
         .withIndex("by_account", (q) => q.eq("accountId", args.accountId!))
         .collect();
     } else {
-      transactions = await ctx.db.query("transactions").collect();
+      // Get all spending accounts (credit_card, checking, savings, money_market)
+      const accounts = await ctx.db.query("accounts").collect();
+      const spendingAccountIds = new Set(
+        accounts
+          .filter((a) => SPENDING_ACCOUNT_TYPES.has(a.type))
+          .map((a) => a._id)
+      );
+
+      const allTransactions = await ctx.db.query("transactions").collect();
+      transactions = allTransactions.filter((t) =>
+        spendingAccountIds.has(t.accountId)
+      );
     }
 
     // Get all categories to identify transfer categories
@@ -222,7 +252,18 @@ export const getMonthlyTotals = query({
         .withIndex("by_account", (q) => q.eq("accountId", args.accountId!))
         .collect();
     } else {
-      transactions = await ctx.db.query("transactions").collect();
+      // Get all spending accounts (credit_card, checking, savings, money_market)
+      const accounts = await ctx.db.query("accounts").collect();
+      const spendingAccountIds = new Set(
+        accounts
+          .filter((a) => SPENDING_ACCOUNT_TYPES.has(a.type))
+          .map((a) => a._id)
+      );
+
+      const allTransactions = await ctx.db.query("transactions").collect();
+      transactions = allTransactions.filter((t) =>
+        spendingAccountIds.has(t.accountId)
+      );
     }
 
     // Get all categories to identify transfer categories

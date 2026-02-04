@@ -12,6 +12,12 @@ import {
 } from "recharts";
 import { formatCurrency } from "@/lib/utils";
 
+interface ChartClickData {
+  activePayload?: Array<{
+    payload: { year: number; month: string };
+  }>;
+}
+
 interface TrendData {
   month: string;
   year: number;
@@ -24,19 +30,29 @@ interface SpendingTrendChartProps {
   data: TrendData[];
   height?: number;
   showIncome?: boolean;
+  onMonthClick?: (year: number, month: string) => void;
 }
 
 export function SpendingTrendChart({
   data,
   height = 300,
   showIncome = true,
+  onMonthClick,
 }: SpendingTrendChartProps) {
   const chartData = data.map((item) => ({
     name: `${item.month} ${item.year}`,
     income: item.income,
     expenses: item.expenses,
     net: item.net,
+    year: item.year,
+    month: item.month,
   }));
+
+  const handleBarClick = (data: { year: number; month: string }) => {
+    if (onMonthClick) {
+      onMonthClick(data.year, data.month);
+    }
+  };
 
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
@@ -67,7 +83,18 @@ export function SpendingTrendChart({
 
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+      <BarChart
+        data={chartData}
+        margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+        onClick={(data) => {
+          const chartData = data as ChartClickData;
+          if (chartData && chartData.activePayload && chartData.activePayload[0]) {
+            const payload = chartData.activePayload[0].payload;
+            handleBarClick({ year: payload.year, month: payload.month });
+          }
+        }}
+        style={{ cursor: onMonthClick ? "pointer" : "default" }}
+      >
         <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
         <XAxis
           dataKey="name"
@@ -89,6 +116,7 @@ export function SpendingTrendChart({
             name="Income"
             fill="var(--color-success)"
             radius={[4, 4, 0, 0]}
+            style={{ cursor: onMonthClick ? "pointer" : "default" }}
           />
         )}
         <Bar
@@ -96,6 +124,7 @@ export function SpendingTrendChart({
           name="Expenses"
           fill="var(--color-destructive)"
           radius={[4, 4, 0, 0]}
+          style={{ cursor: onMonthClick ? "pointer" : "default" }}
         />
       </BarChart>
     </ResponsiveContainer>

@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useQuery } from "convex/react";
+import { useRouter } from "next/navigation";
+import { format, startOfMonth, endOfMonth, parse } from "date-fns";
 import { api } from "../../../convex/_generated/api";
 import { Sidebar } from "@/components/layout/Sidebar";
 import {
@@ -61,10 +63,36 @@ function getDateRange(range: DateRange): { start: number; end: number } {
 }
 
 export default function SpendingPage() {
+  const router = useRouter();
   const [dateRange, setDateRange] = useState<DateRange>("lastYear");
   const [showEssentialOnly, setShowEssentialOnly] = useState<boolean | null>(null);
 
   const { start, end } = useMemo(() => getDateRange(dateRange), [dateRange]);
+
+  // Navigate to transactions page with category filter
+  const handleCategoryClick = useCallback(
+    (categoryId: string) => {
+      const startDate = format(new Date(start), "yyyy-MM-dd");
+      const endDate = format(new Date(end), "yyyy-MM-dd");
+      router.push(
+        `/transactions?category=${categoryId}&startDate=${startDate}&endDate=${endDate}`
+      );
+    },
+    [router, start, end]
+  );
+
+  // Navigate to transactions page with month filter
+  const handleMonthClick = useCallback(
+    (year: number, month: string) => {
+      // Parse the month name (e.g., "Jan", "Feb") to get the month number
+      const monthDate = parse(month, "MMM", new Date());
+      const targetDate = new Date(year, monthDate.getMonth(), 1);
+      const startDate = format(startOfMonth(targetDate), "yyyy-MM-dd");
+      const endDate = format(endOfMonth(targetDate), "yyyy-MM-dd");
+      router.push(`/transactions?startDate=${startDate}&endDate=${endDate}`);
+    },
+    [router]
+  );
 
   const spendingData = useQuery(api.analytics.spending.getSpendingByCategory, {
     startDate: start,
@@ -246,7 +274,10 @@ export default function SpendingPage() {
               </CardHeader>
               <CardContent>
                 {filteredSpending ? (
-                  <SpendingPieChart data={filteredSpending.byCategory} />
+                  <SpendingPieChart
+                    data={filteredSpending.byCategory}
+                    onCategoryClick={handleCategoryClick}
+                  />
                 ) : (
                   <div className="h-[300px] flex items-center justify-center text-muted-foreground">
                     Loading...
@@ -259,12 +290,15 @@ export default function SpendingPage() {
               <CardHeader>
                 <CardTitle>Monthly Trend</CardTitle>
                 <CardDescription>
-                  Income and expenses over the past 6 months
+                  Income and expenses over the past 12 months
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 {trendData ? (
-                  <SpendingTrendChart data={trendData} />
+                  <SpendingTrendChart
+                    data={trendData}
+                    onMonthClick={handleMonthClick}
+                  />
                 ) : (
                   <div className="h-[300px] flex items-center justify-center text-muted-foreground">
                     Loading...
@@ -289,9 +323,22 @@ export default function SpendingPage() {
                     const percentage = spendingData
                       ? (item.total / spendingData.totalSpending) * 100
                       : 0;
+                    const isClickable = !!item.category?._id;
 
                     return (
-                      <div key={item.category?._id || index} className="flex items-center gap-4">
+                      <div
+                        key={item.category?._id || index}
+                        className={`flex items-center gap-4 p-2 -mx-2 rounded-lg transition-colors ${
+                          isClickable
+                            ? "cursor-pointer hover:bg-muted/50"
+                            : ""
+                        }`}
+                        onClick={() => {
+                          if (item.category?._id) {
+                            handleCategoryClick(item.category._id);
+                          }
+                        }}
+                      >
                         <div
                           className="w-3 h-3 rounded-full flex-shrink-0"
                           style={{ backgroundColor: item.category?.color || "#607D8B" }}

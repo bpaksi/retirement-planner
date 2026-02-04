@@ -19,12 +19,14 @@ interface ChartDataItem {
   value: number;
   color: string;
   isEssential: boolean;
+  categoryId: string | null;
 }
 
 interface SpendingPieChartProps {
   data: SpendingData[];
   showLegend?: boolean;
   height?: number;
+  onCategoryClick?: (categoryId: string) => void;
 }
 
 interface LegendEntry {
@@ -76,13 +78,21 @@ export function SpendingPieChart({
   data,
   showLegend = true,
   height = 300,
+  onCategoryClick,
 }: SpendingPieChartProps) {
   const chartData: ChartDataItem[] = data.map((item) => ({
     name: item.category?.name || "Uncategorized",
     value: item.total,
     color: item.category?.color || "#607D8B",
     isEssential: item.category?.isEssential || false,
+    categoryId: item.category?._id || null,
   }));
+
+  const handleClick = (data: ChartDataItem) => {
+    if (data.categoryId && onCategoryClick) {
+      onCategoryClick(data.categoryId);
+    }
+  };
 
   if (chartData.length === 0) {
     return (
@@ -106,9 +116,15 @@ export function SpendingPieChart({
           outerRadius={100}
           paddingAngle={2}
           dataKey="value"
+          onClick={handleClick}
+          style={{ cursor: onCategoryClick ? "pointer" : "default" }}
         >
           {chartData.map((entry, index) => (
-            <Cell key={index} fill={entry.color} />
+            <Cell
+              key={index}
+              fill={entry.color}
+              style={{ cursor: onCategoryClick && entry.categoryId ? "pointer" : "default" }}
+            />
           ))}
         </Pie>
         <Tooltip content={<CustomTooltip />} />
