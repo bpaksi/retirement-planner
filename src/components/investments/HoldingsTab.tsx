@@ -107,16 +107,14 @@ export function HoldingsTab({ holdings, showAccount = false }: HoldingsTabProps)
     }
   };
 
-  const SortHeader = ({
-    field,
-    children,
-    className,
-  }: {
-    field: SortField;
-    children: React.ReactNode;
-    className?: string;
-  }) => (
+  // Render helper for sortable headers (not a component to avoid static component issues)
+  const renderSortHeader = (
+    field: SortField,
+    children: React.ReactNode,
+    className?: string
+  ) => (
     <TableHead
+      key={field}
       className={cn("cursor-pointer select-none hover:bg-muted/50", className)}
       onClick={() => handleSort(field)}
     >
@@ -148,25 +146,15 @@ export function HoldingsTab({ holdings, showAccount = false }: HoldingsTabProps)
     <Table>
       <TableHeader>
         <TableRow>
-          <SortHeader field="symbol">Symbol</SortHeader>
-          <SortHeader field="name">Name</SortHeader>
-          {showAccount && <SortHeader field="account">Account</SortHeader>}
-          <SortHeader field="shares" className="text-right">
-            Shares
-          </SortHeader>
-          <SortHeader field="price" className="text-right">
-            Price
-          </SortHeader>
-          <SortHeader field="value" className="text-right">
-            Value
-          </SortHeader>
-          <SortHeader field="costBasis" className="text-right">
-            Cost Basis
-          </SortHeader>
-          <SortHeader field="gainLoss" className="text-right">
-            Gain/Loss
-          </SortHeader>
-          <SortHeader field="assetClass">Asset Class</SortHeader>
+          {renderSortHeader("symbol", "Symbol")}
+          {renderSortHeader("name", "Name")}
+          {showAccount && renderSortHeader("account", "Account")}
+          {renderSortHeader("shares", "Shares", "text-right")}
+          {renderSortHeader("price", "Price", "text-right")}
+          {renderSortHeader("value", "Value", "text-right")}
+          {renderSortHeader("costBasis", "Cost Basis", "text-right")}
+          {renderSortHeader("gainLoss", "Gain/Loss", "text-right")}
+          {renderSortHeader("assetClass", "Asset Class")}
         </TableRow>
       </TableHeader>
       <TableBody>

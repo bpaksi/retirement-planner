@@ -552,7 +552,7 @@ export const getPaymentSchedule = query({
     }
 
     // Get actual transactions if linked account exists
-    let actualPayments: Array<{
+    const actualPayments: Array<{
       type: "actual";
       date: number;
       payment: number;

@@ -29,8 +29,6 @@ import {
   GraduationCap,
   CreditCard,
   Wallet,
-  Calendar,
-  TrendingDown,
   Calculator,
   ChevronDown,
   ChevronUp,

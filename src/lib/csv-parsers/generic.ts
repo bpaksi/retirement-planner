@@ -49,7 +49,7 @@ export function parseAmount(str: string): number {
   const isNegative = str.includes("(") && str.includes(")");
 
   // Clean the string
-  let cleaned = str
+  const cleaned = str
     .replace(/[$,]/g, "")
     .replace(/^\(/, "")
     .replace(/\)$/, "")

@@ -1,5 +1,4 @@
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
 
 // Default categories for the retirement planner
 const DEFAULT_CATEGORIES = [

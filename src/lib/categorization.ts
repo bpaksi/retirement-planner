@@ -1,5 +1,3 @@
-import { Id } from "../../convex/_generated/dataModel";
-
 export interface CategorizationRule {
   pattern: RegExp;
   categoryId: string;

@@ -17,16 +17,12 @@ import {
   ParsedHolding,
   HoldingsParseResult,
 } from "@/lib/csv-parsers/edwardJonesHoldings";
-import {
-  detectPotentialAccounts,
-  SuggestedAccount,
-} from "@/lib/transfer-detection";
+import { detectPotentialAccounts } from "@/lib/transfer-detection";
 import { FileDropzone } from "./FileDropzone";
 import { PreviewTable } from "./PreviewTable";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
-import { Input } from "@/components/ui/Input";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
+import { Card, CardContent } from "@/components/ui/Card";
 import {
   Check,
   ChevronRight,
@@ -140,7 +136,8 @@ export function ImportWizard({
   const [columnMapping, setColumnMapping] = useState<Partial<ColumnMapping>>(
     {}
   );
-  const [isImporting, setIsImporting] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_isImporting, setIsImporting] = useState(false);
   const [importResult, setImportResult] = useState<{
     imported: number;
     duplicates: number;

@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback } from "react";
 import {
   BarChart,
   Bar,
@@ -54,12 +55,15 @@ export function SpendingTrendChart({
     }
   };
 
-  const CustomTooltip = ({ active, payload, label }: any) => {
+  // Memoized tooltip render function to avoid creating new component on each render
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const renderTooltip = useCallback((props: any) => {
+    const { active, payload, label } = props;
     if (active && payload && payload.length) {
       return (
         <div className="bg-popover border border-border rounded-lg p-3 shadow-lg">
           <p className="font-medium mb-2">{label}</p>
-          {payload.map((entry: any, index: number) => (
+          {payload.map((entry: { name: string; value: number; color: string }, index: number) => (
             <p key={index} className="text-sm" style={{ color: entry.color }}>
               {entry.name}: {formatCurrency(entry.value)}
             </p>
@@ -68,7 +72,7 @@ export function SpendingTrendChart({
       );
     }
     return null;
-  };
+  }, []);
 
   if (chartData.length === 0) {
     return (
@@ -108,7 +112,7 @@ export function SpendingTrendChart({
           tickLine={{ stroke: "currentColor" }}
           className="text-muted-foreground"
         />
-        <Tooltip content={<CustomTooltip />} />
+        <Tooltip content={renderTooltip} />
         <Legend />
         {showIncome && (
           <Bar

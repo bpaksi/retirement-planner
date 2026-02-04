@@ -1,7 +1,7 @@
 "use client";
 
 import { Sidebar } from "@/components/layout/Sidebar";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
+import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { Settings, Tags, FileText } from "lucide-react";
 import Link from "next/link";
 

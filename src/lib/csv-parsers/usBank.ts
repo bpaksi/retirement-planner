@@ -39,7 +39,6 @@ export const usBankParser: CSVParser = {
 
       // Build description from Name field, removing leading "$ " if present
       const name = getColumn("Name")?.replace(/^\$\s*/, "").trim() || "Unknown";
-      const memo = getColumn("Memo")?.trim();
       const transaction = getColumn("Transaction")?.trim();
 
       // Use name as primary description, transaction type as category

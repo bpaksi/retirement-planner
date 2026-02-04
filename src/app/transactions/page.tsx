@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, Suspense } from "react";
 import { useQuery } from "convex/react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { format, parseISO, startOfDay, endOfDay } from "date-fns";
@@ -29,7 +29,6 @@ import { DateRangePicker } from "@/components/ui/DateRangePicker";
 import { SearchInput } from "@/components/ui/SearchInput";
 import {
   MultiSelectPopover,
-  MultiSelectGroup,
   MultiSelectOption,
 } from "@/components/ui/MultiSelectPopover";
 import { formatCurrency, formatDate } from "@/lib/utils";
@@ -111,7 +110,7 @@ const STATUS_OPTIONS: MultiSelectOption<StatusFilter>[] = [
   },
 ];
 
-export default function TransactionsPage() {
+function TransactionsPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
@@ -173,22 +172,36 @@ export default function TransactionsPage() {
   // Filter category ID from URL (separate from multi-select)
   const filterCategoryId = categoryIdParam || undefined;
 
-  // Handle URL param changes
+  // Track previous values for URL sync to avoid cascading renders
+  const prevImportParam = useRef(importParam);
+  const prevStatusFromParam = useRef(statusFromParam);
+
+  // Handle URL param changes - only when params actually change
+  // This is a valid pattern for syncing URL state to component state
   useEffect(() => {
-    if (importParam === "true") {
-      setShowImportWizard(true);
-      setImportAccountId(accountIdParam || undefined);
+    if (importParam !== prevImportParam.current) {
+      prevImportParam.current = importParam;
+      if (importParam === "true") {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setShowImportWizard(true);
+        setImportAccountId(accountIdParam || undefined);
+      }
     }
   }, [importParam, accountIdParam]);
 
   // Sync status filter from URL param when it changes
+  // This is a valid pattern for syncing URL state to component state
   useEffect(() => {
-    if (statusFromParam && !selectedStatuses.includes(statusFromParam)) {
-      setSelectedStatuses((prev) =>
-        prev.includes(statusFromParam) ? prev : [...prev, statusFromParam]
-      );
+    if (statusFromParam !== prevStatusFromParam.current) {
+      prevStatusFromParam.current = statusFromParam;
+      if (statusFromParam && !selectedStatuses.includes(statusFromParam)) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setSelectedStatuses((prev) =>
+          prev.includes(statusFromParam) ? prev : [...prev, statusFromParam]
+        );
+      }
     }
-  }, [statusFromParam]);
+  }, [statusFromParam, selectedStatuses]);
 
   // Update URL with filter params
   const updateUrlParams = (params: {
@@ -298,9 +311,10 @@ export default function TransactionsPage() {
     ? categories?.find((c) => c._id === filterCategoryId)
     : null;
 
-  const handleCategoryUpdateComplete = (count: number) => {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const handleCategoryUpdateComplete = (_count: number) => {
     setEditingTransaction(null);
-    // Could add a toast notification here showing "Updated {count} transaction(s)"
+    // Could add a toast notification here showing "Updated {_count} transaction(s)"
   };
 
   if (showImportWizard) {
@@ -796,5 +810,25 @@ export default function TransactionsPage() {
         })()}
       </main>
     </div>
+  );
+}
+
+export default function TransactionsPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex h-screen">
+        <Sidebar />
+        <main className="flex-1 overflow-auto">
+          <div className="p-8">
+            <div className="animate-pulse">
+              <div className="h-8 w-48 bg-muted rounded mb-4" />
+              <div className="h-4 w-64 bg-muted rounded" />
+            </div>
+          </div>
+        </main>
+      </div>
+    }>
+      <TransactionsPageContent />
+    </Suspense>
   );
 }

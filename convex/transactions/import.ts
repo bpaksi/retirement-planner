@@ -28,7 +28,6 @@ export const importBatch = mutation({
 
     // Loan accounts: payments are stored as positive (debt reduction)
     // For loan accounts, we keep amounts positive as provided
-    const isLoanAccount = account.type === "loan";
 
     // Get all categories for categorization
     const categories = await ctx.db.query("categories").collect();
@@ -97,7 +96,7 @@ export const importBatch = mutation({
 
             break;
           }
-        } catch (e) {
+        } catch {
           // Invalid regex pattern, skip
         }
       }

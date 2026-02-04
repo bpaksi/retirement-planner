@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { Id } from "../../../convex/_generated/dataModel";
@@ -47,6 +47,7 @@ export function BatchCategoryAssigner({
   const [selectedIds, setSelectedIds] = useState<Set<Id<"transactions">>>(
     new Set()
   );
+  const hasInitializedSelection = useRef(false);
 
   // Query similar transactions
   const similarTransactions = useQuery(api.transactions.queries.findSimilar, {
@@ -60,12 +61,15 @@ export function BatchCategoryAssigner({
     api.transactions.mutations.bulkUpdateCategory
   );
 
-  // Pre-select high-confidence matches when query returns
+  // Pre-select high-confidence matches when query returns (only once)
+  // This is a valid pattern for initializing state from async query results
   useEffect(() => {
-    if (similarTransactions) {
+    if (similarTransactions && !hasInitializedSelection.current) {
+      hasInitializedSelection.current = true;
       const highConfidence = similarTransactions
         .filter((t) => t.similarityScore >= 0.6)
         .map((t) => t._id);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedIds(new Set(highConfidence));
     }
   }, [similarTransactions]);
