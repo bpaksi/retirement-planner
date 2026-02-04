@@ -304,8 +304,19 @@ export default defineSchema({
   // ALLOCATION TARGETS
   // ============================================
   allocationTargets: defineTable({
-    assetClass: v.string(),
+    accountId: v.optional(v.id("accounts")), // null = global default
+    assetClass: v.union(
+      v.literal("us_stock"),
+      v.literal("intl_stock"),
+      v.literal("bond"),
+      v.literal("cash"),
+      v.literal("real_estate"),
+      v.literal("other")
+    ),
     targetPercent: v.number(),
     rebalanceThreshold: v.number(),
-  }).index("by_asset_class", ["assetClass"]),
+  })
+    .index("by_asset_class", ["assetClass"])
+    .index("by_account", ["accountId"])
+    .index("by_account_asset", ["accountId", "assetClass"]),
 });
