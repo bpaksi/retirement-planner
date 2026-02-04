@@ -40,6 +40,7 @@ import {
   ArrowRight,
   X,
   Plus,
+  Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -110,6 +111,16 @@ export default function LiabilityDetailPage() {
   const [showSyncConfirm, setShowSyncConfirm] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [showPastPayments, setShowPastPayments] = useState(true);
+  const [showEditDialog, setShowEditDialog] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState({
+    name: "",
+    originalAmount: "",
+    currentBalance: "",
+    interestRate: "",
+    termYears: "",
+    startDate: "",
+  });
 
   const liability = useQuery(api.liabilities.queries.get, { id: liabilityId });
 
@@ -189,6 +200,82 @@ export default function LiabilityDetailPage() {
     }
   };
 
+  const handleOpenEditDialog = () => {
+    if (!liability) return;
+    setEditForm({
+      name: liability.name,
+      originalAmount: liability.originalAmount?.toString() ?? "",
+      currentBalance: liability.currentBalance.toString(),
+      interestRate: ((liability.interestRate ?? 0) * 100).toString(),
+      termYears: liability.termMonths ? (liability.termMonths / 12).toString() : "",
+      startDate: liability.startDate
+        ? new Date(liability.startDate).toISOString().split("T")[0]
+        : "",
+    });
+    setShowEditDialog(true);
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editForm.name) return;
+
+    setIsEditing(true);
+    try {
+      const updates: {
+        id: Id<"liabilities">;
+        name?: string;
+        originalAmount?: number;
+        currentBalance?: number;
+        interestRate?: number;
+        termMonths?: number;
+        startDate?: number;
+        minimumPayment?: number;
+      } = { id: liabilityId };
+
+      if (editForm.name !== liability?.name) {
+        updates.name = editForm.name;
+      }
+      if (editForm.originalAmount) {
+        updates.originalAmount = parseFloat(editForm.originalAmount);
+      }
+      if (editForm.currentBalance) {
+        updates.currentBalance = parseFloat(editForm.currentBalance);
+      }
+      if (editForm.interestRate) {
+        updates.interestRate = parseFloat(editForm.interestRate) / 100;
+      }
+      if (editForm.termYears) {
+        updates.termMonths = parseInt(editForm.termYears) * 12;
+      }
+      if (editForm.startDate) {
+        updates.startDate = new Date(editForm.startDate + "T12:00:00").getTime();
+      }
+
+      // Recalculate minimum payment if relevant fields changed
+      const originalAmount = updates.originalAmount ?? liability?.originalAmount;
+      const interestRate = updates.interestRate ?? liability?.interestRate;
+      const termMonths = updates.termMonths ?? liability?.termMonths;
+
+      if (originalAmount && interestRate && interestRate > 0 && termMonths) {
+        const monthlyRate = interestRate / 12;
+        const n = termMonths;
+        const p = originalAmount;
+        // Standard amortization formula: M = P * [r(1+r)^n] / [(1+r)^n - 1]
+        const payment =
+          (p * (monthlyRate * Math.pow(1 + monthlyRate, n))) /
+          (Math.pow(1 + monthlyRate, n) - 1);
+        updates.minimumPayment = Math.round(payment * 100) / 100;
+      }
+
+      await updateLiability(updates);
+      setShowEditDialog(false);
+    } catch (error) {
+      console.error("Failed to update liability:", error);
+    } finally {
+      setIsEditing(false);
+    }
+  };
+
   if (!liability) {
     return (
       <div className="flex h-screen">
@@ -229,7 +316,18 @@ export default function LiabilityDetailPage() {
               <Icon className="h-6 w-6 text-destructive" />
             </div>
             <div className="flex-1">
-              <h1 className="text-2xl font-bold">{liability.name}</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-2xl font-bold">{liability.name}</h1>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleOpenEditDialog}
+                  className="h-8 w-8 p-0"
+                  title="Edit loan details"
+                >
+                  <Pencil className="h-4 w-4" />
+                </Button>
+              </div>
               <p className="text-muted-foreground">
                 {LIABILITY_LABELS[liability.type]}
               </p>
@@ -938,6 +1036,130 @@ export default function LiabilityDetailPage() {
             )}
           </Button>
         </DialogFooter>
+      </Dialog>
+
+      {/* Edit Loan Details Dialog */}
+      <Dialog
+        open={showEditDialog}
+        onClose={() => setShowEditDialog(false)}
+      >
+        <DialogCloseButton onClose={() => setShowEditDialog(false)} />
+        <DialogHeader>
+          <DialogTitle>Edit Loan Details</DialogTitle>
+        </DialogHeader>
+        <DialogContent>
+          <form onSubmit={handleSaveEdit} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Name</label>
+              <Input
+                type="text"
+                value={editForm.name}
+                onChange={(e) =>
+                  setEditForm({ ...editForm, name: e.target.value })
+                }
+                placeholder="Loan name"
+                required
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Original Amount
+                </label>
+                <Input
+                  type="number"
+                  value={editForm.originalAmount}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, originalAmount: e.target.value })
+                  }
+                  placeholder="250000"
+                  min="0"
+                  step="0.01"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Current Balance
+                </label>
+                <Input
+                  type="number"
+                  value={editForm.currentBalance}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, currentBalance: e.target.value })
+                  }
+                  placeholder="200000"
+                  min="0"
+                  step="0.01"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Interest Rate (%)
+                </label>
+                <Input
+                  type="number"
+                  value={editForm.interestRate}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, interestRate: e.target.value })
+                  }
+                  placeholder="6.5"
+                  min="0"
+                  max="100"
+                  step="0.001"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Term (Years)
+                </label>
+                <Input
+                  type="number"
+                  value={editForm.termYears}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, termYears: e.target.value })
+                  }
+                  placeholder="30"
+                  min="1"
+                  max="50"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                Loan Start Date
+              </label>
+              <Input
+                type="date"
+                value={editForm.startDate}
+                onChange={(e) =>
+                  setEditForm({ ...editForm, startDate: e.target.value })
+                }
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                When the loan was originated
+              </p>
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowEditDialog(false)}
+                disabled={isEditing}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isEditing || !editForm.name}>
+                {isEditing ? "Saving..." : "Save Changes"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
       </Dialog>
     </div>
   );
