@@ -14,8 +14,12 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Retirement Planner",
+  title: "Money Mage - Retirement Planner",
   description: "Personal retirement planning with spending analysis, investment tracking, and Monte Carlo projections",
+  icons: {
+    icon: "/icon.png",
+    apple: "/apple-icon.png",
+  },
 };
 
 export default function RootLayout({

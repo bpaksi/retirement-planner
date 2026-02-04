@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
@@ -47,21 +48,28 @@ export function Sidebar() {
       )}
     >
       {/* Logo/Header */}
-      <div className="flex items-center justify-between h-16 px-4 border-b border-sidebar-border">
-        {!collapsed && (
-          <Link href="/" className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-              <TrendingUp className="w-5 h-5 text-primary-foreground" />
-            </div>
-            <span className="font-semibold text-sidebar-foreground">
-              Retirement Planner
-            </span>
+      <div className="flex items-center h-16 px-2 border-b border-sidebar-border">
+        {!collapsed ? (
+          <Link href="/" className="flex items-center">
+            <Image
+              src="/logo.png"
+              alt="Money Mage"
+              width={240}
+              height={126}
+              className="h-14 w-auto"
+              priority
+            />
           </Link>
-        )}
-        {collapsed && (
-          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center mx-auto">
-            <TrendingUp className="w-5 h-5 text-primary-foreground" />
-          </div>
+        ) : (
+          <Link href="/" className="mx-auto">
+            <Image
+              src="/icon.png"
+              alt="Money Mage"
+              width={40}
+              height={40}
+              className="w-10 h-10"
+            />
+          </Link>
         )}
       </div>
 
