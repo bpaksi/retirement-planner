@@ -5,12 +5,15 @@ import { calculateSimilarityScore, getMatchLevel } from "../lib/similarity";
 export const list = query({
   args: {
     accountId: v.optional(v.id("accounts")),
+    accountIds: v.optional(v.array(v.id("accounts"))),
     startDate: v.optional(v.number()),
     endDate: v.optional(v.number()),
     categoryId: v.optional(v.id("categories")),
     categoryIds: v.optional(v.array(v.id("categories"))),
     flaggedOnly: v.optional(v.boolean()),
     uncategorizedOnly: v.optional(v.boolean()),
+    linkedOnly: v.optional(v.boolean()),
+    searchQuery: v.optional(v.string()),
     limit: v.optional(v.number()),
     offset: v.optional(v.number()),
     sortBy: v.optional(v.union(v.literal("date"), v.literal("amount"), v.literal("category"))),
@@ -37,6 +40,20 @@ export const list = query({
     // Apply additional filters
     let filtered = transactions;
 
+    // Multi-account filter (takes precedence if accountId wasn't used for index)
+    if (args.accountIds && args.accountIds.length > 0 && !args.accountId) {
+      const accountSet = new Set(args.accountIds);
+      filtered = filtered.filter((t) => accountSet.has(t.accountId));
+    }
+
+    // Search query filter (case-insensitive description contains)
+    if (args.searchQuery && args.searchQuery.trim()) {
+      const searchLower = args.searchQuery.trim().toLowerCase();
+      filtered = filtered.filter((t) =>
+        t.description.toLowerCase().includes(searchLower)
+      );
+    }
+
     if (args.startDate) {
       filtered = filtered.filter((t) => t.date >= args.startDate!);
     }
@@ -56,6 +73,9 @@ export const list = query({
     }
     if (args.uncategorizedOnly) {
       filtered = filtered.filter((t) => !t.categoryId);
+    }
+    if (args.linkedOnly) {
+      filtered = filtered.filter((t) => !!t.linkedTransactionId);
     }
 
     // Get categories for sorting and display (need all categories for sort)

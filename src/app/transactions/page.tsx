@@ -16,7 +16,6 @@ import {
   CardContent,
 } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { Select } from "@/components/ui/Select";
 import {
   Table,
   TableHeader,
@@ -27,6 +26,12 @@ import {
 } from "@/components/ui/Table";
 import { ImportWizard } from "@/components/import/ImportWizard";
 import { DateRangePicker } from "@/components/ui/DateRangePicker";
+import { SearchInput } from "@/components/ui/SearchInput";
+import {
+  MultiSelectPopover,
+  MultiSelectGroup,
+  MultiSelectOption,
+} from "@/components/ui/MultiSelectPopover";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import {
   Upload,
@@ -39,20 +44,72 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
-  HelpCircle,
   Calendar,
+  Link2,
+  Building2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Dialog } from "@/components/ui/Dialog";
-import { Tooltip } from "@/components/ui/Tooltip";
-import {
-  Popover,
-  PopoverTrigger,
-  PopoverContent,
-} from "@/components/ui/Popover";
 import { BatchCategoryAssigner } from "@/components/transactions/BatchCategoryAssigner";
 import { LinkStatusIndicator } from "@/components/transactions/LinkStatusIndicator";
 import { LinkTransactionDialog } from "@/components/transactions/LinkTransactionDialog";
+import { useDebounce } from "@/hooks/useDebounce";
+
+// Account type groupings for the multi-select
+type AccountType =
+  | "401k"
+  | "403b"
+  | "traditional_ira"
+  | "roth_ira"
+  | "roth_401k"
+  | "brokerage"
+  | "checking"
+  | "savings"
+  | "money_market"
+  | "credit_card"
+  | "loan"
+  | "mortgage"
+  | "other";
+
+const ACCOUNT_TYPE_GROUPS: { label: string; types: AccountType[] }[] = [
+  {
+    label: "Investment",
+    types: ["401k", "403b", "traditional_ira", "roth_ira", "roth_401k", "brokerage"],
+  },
+  {
+    label: "Cash & Banking",
+    types: ["checking", "savings", "money_market", "credit_card"],
+  },
+  {
+    label: "Loans",
+    types: ["loan", "mortgage"],
+  },
+  {
+    label: "Other",
+    types: ["other"],
+  },
+];
+
+// Status filter options
+type StatusFilter = "flagged" | "uncategorized" | "linked";
+
+const STATUS_OPTIONS: MultiSelectOption<StatusFilter>[] = [
+  {
+    value: "flagged",
+    label: "Flagged",
+    icon: <Flag className="w-4 h-4" />,
+  },
+  {
+    value: "uncategorized",
+    label: "Uncategorized",
+    icon: <CircleSlash className="w-4 h-4" />,
+  },
+  {
+    value: "linked",
+    label: "Linked",
+    icon: <Link2 className="w-4 h-4" />,
+  },
+];
 
 export default function TransactionsPage() {
   const searchParams = useSearchParams();
@@ -66,6 +123,12 @@ export default function TransactionsPage() {
   const startDateParam = searchParams.get("startDate");
   const endDateParam = searchParams.get("endDate");
   const categoryIdParamRaw = searchParams.get("category");
+
+  // Check for special status filter values in category param
+  const isStatusFilter = (val: string | null): val is StatusFilter =>
+    val === "uncategorized" || val === "flagged" || val === "linked";
+  const statusFromParam = isStatusFilter(categoryIdParamRaw) ? categoryIdParamRaw : null;
+
   // Validate category ID looks like a valid Convex ID (not a word like "uncategorized")
   // Convex IDs contain a mix of letters and numbers, so require at least one digit
   const isValidConvexId = (id: string | null): id is string =>
@@ -79,11 +142,12 @@ export default function TransactionsPage() {
     accountIdParam || undefined
   );
   const [page, setPage] = useState(0);
-  const [selectedAccountId, setSelectedAccountId] = useState<
-    Id<"accounts"> | undefined
-  >();
-  const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
-  const [showUncategorizedOnly, setShowUncategorizedOnly] = useState(false);
+  const [selectedAccountIds, setSelectedAccountIds] = useState<Id<"accounts">[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  // Initialize status filter from URL param if present
+  const [selectedStatuses, setSelectedStatuses] = useState<StatusFilter[]>(
+    statusFromParam ? [statusFromParam] : []
+  );
   const [editingTransaction, setEditingTransaction] = useState<string | null>(
     null
   );
@@ -93,6 +157,9 @@ export default function TransactionsPage() {
   const [sortBy, setSortBy] = useState<"date" | "amount" | "category">("date");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<Id<"categories">[]>([]);
+
+  // Debounce search query for performance
+  const debouncedSearchQuery = useDebounce(searchQuery, 300);
 
   // Parse date range from URL params
   const dateRange: DateRange | undefined = useMemo(() => {
@@ -113,6 +180,15 @@ export default function TransactionsPage() {
       setImportAccountId(accountIdParam || undefined);
     }
   }, [importParam, accountIdParam]);
+
+  // Sync status filter from URL param when it changes
+  useEffect(() => {
+    if (statusFromParam && !selectedStatuses.includes(statusFromParam)) {
+      setSelectedStatuses((prev) =>
+        prev.includes(statusFromParam) ? prev : [...prev, statusFromParam]
+      );
+    }
+  }, [statusFromParam]);
 
   // Update URL with filter params
   const updateUrlParams = (params: {
@@ -193,10 +269,17 @@ export default function TransactionsPage() {
     ? endOfDay(dateRange.to).getTime()
     : undefined;
 
+  // Extract status filter flags
+  const showFlaggedOnly = selectedStatuses.includes("flagged");
+  const showUncategorizedOnly = selectedStatuses.includes("uncategorized");
+  const showLinkedOnly = selectedStatuses.includes("linked");
+
   const transactions = useQuery(api.transactions.queries.list, {
-    accountId: selectedAccountId,
+    accountIds: selectedAccountIds.length > 0 ? selectedAccountIds : undefined,
     flaggedOnly: showFlaggedOnly || undefined,
     uncategorizedOnly: showUncategorizedOnly || undefined,
+    linkedOnly: showLinkedOnly || undefined,
+    searchQuery: debouncedSearchQuery || undefined,
     categoryId: filterCategoryId,
     categoryIds: selectedCategoryIds.length > 0 ? selectedCategoryIds : undefined,
     startDate: startDateTimestamp,
@@ -274,130 +357,103 @@ export default function TransactionsPage() {
                   <span className="text-sm font-medium">Filters:</span>
                 </div>
 
+                {/* Search Input - First position */}
+                <SearchInput
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setPage(0);
+                  }}
+                  onClear={() => {
+                    setSearchQuery("");
+                    setPage(0);
+                  }}
+                  placeholder="Search descriptions..."
+                  className="w-[200px]"
+                />
+
+                {/* Date Range */}
                 <DateRangePicker
                   value={dateRange}
                   onChange={handleDateRangeChange}
                   placeholder="Date range"
                 />
 
-                <Select
-                  value={selectedAccountId || ""}
-                  onChange={(e) =>
-                    setSelectedAccountId(
-                      (e.target.value as Id<"accounts">) || undefined
-                    )
-                  }
-                  className="w-[200px]"
-                >
-                  <option value="">All Accounts</option>
-                  {accounts?.map((account) => (
-                    <option key={account._id} value={account._id}>
-                      {account.name}
-                    </option>
-                  ))}
-                </Select>
-
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant={selectedCategoryIds.length > 0 ? "default" : "outline"}
-                      size="sm"
-                      className="min-w-[120px]"
-                    >
-                      <Filter className="w-4 h-4 mr-2" />
-                      {selectedCategoryIds.length > 0
-                        ? `${selectedCategoryIds.length} ${selectedCategoryIds.length === 1 ? "Category" : "Categories"}`
-                        : "Categories"}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-[250px] max-h-[300px] overflow-y-auto p-2">
-                    <div className="space-y-1">
-                      {categories?.map((cat) => (
-                        <label
-                          key={cat._id}
-                          className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selectedCategoryIds.includes(cat._id)}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedCategoryIds([...selectedCategoryIds, cat._id]);
-                              } else {
-                                setSelectedCategoryIds(
-                                  selectedCategoryIds.filter((id) => id !== cat._id)
-                                );
-                              }
-                              setPage(0);
-                            }}
-                            className="rounded border-border"
-                          />
-                          <span className="text-sm">{cat.name}</span>
-                        </label>
-                      ))}
-                      {selectedCategoryIds.length > 0 && (
-                        <button
-                          onClick={() => {
-                            setSelectedCategoryIds([]);
-                            setPage(0);
-                          }}
-                          className="w-full text-left px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground"
-                        >
-                          Clear selection
-                        </button>
-                      )}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-
-                <Tooltip
-                  content={
-                    <div className="max-w-[200px]">
-                      <p className="font-medium mb-1">Why are transactions flagged?</p>
-                      <p className="text-muted-foreground text-xs">
-                        Transactions are flagged when auto-categorization has low confidence,
-                        they match multiple rules, or the category needs manual review.
-                      </p>
-                    </div>
-                  }
-                  side="bottom"
-                >
-                  <Button
-                    variant={showFlaggedOnly ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setShowFlaggedOnly(!showFlaggedOnly)}
-                  >
-                    <Flag
-                      className={cn(
-                        "w-4 h-4 mr-2",
-                        showFlaggedOnly && "fill-current"
-                      )}
-                    />
-                    Flagged Only
-                    <HelpCircle className="w-3 h-3 ml-1 opacity-50" />
-                  </Button>
-                </Tooltip>
-
-                <Button
-                  variant={showUncategorizedOnly ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setShowUncategorizedOnly(!showUncategorizedOnly)}
-                >
-                  <CircleSlash
-                    className="w-4 h-4 mr-2"
+                {/* Accounts Multi-Select (grouped by type) */}
+                {accounts && accounts.length > 0 && (
+                  <MultiSelectPopover
+                    groups={ACCOUNT_TYPE_GROUPS.map((group) => ({
+                      label: group.label,
+                      options: accounts
+                        .filter((acc) => group.types.includes(acc.type as AccountType))
+                        .map((acc) => ({
+                          value: acc._id,
+                          label: acc.name,
+                        })),
+                    })).filter((group) => group.options.length > 0)}
+                    value={selectedAccountIds}
+                    onChange={(ids) => {
+                      setSelectedAccountIds(ids as Id<"accounts">[]);
+                      setPage(0);
+                    }}
+                    placeholder="Accounts"
+                    icon={<Building2 className="w-4 h-4 mr-2" />}
                   />
-                  Uncategorized
-                </Button>
+                )}
 
-                {(selectedAccountId || showFlaggedOnly || showUncategorizedOnly || selectedCategoryIds.length > 0 || dateRange || filterCategoryId) && (
+                {/* Categories Multi-Select (grouped by type) */}
+                {categories && categories.length > 0 && (
+                  <MultiSelectPopover
+                    groups={[
+                      {
+                        label: "Expense",
+                        options: categories
+                          .filter((cat) => cat.type === "expense")
+                          .map((cat) => ({ value: cat._id, label: cat.name })),
+                      },
+                      {
+                        label: "Income",
+                        options: categories
+                          .filter((cat) => cat.type === "income")
+                          .map((cat) => ({ value: cat._id, label: cat.name })),
+                      },
+                      {
+                        label: "Transfer",
+                        options: categories
+                          .filter((cat) => cat.type === "transfer")
+                          .map((cat) => ({ value: cat._id, label: cat.name })),
+                      },
+                    ].filter((group) => group.options.length > 0)}
+                    value={selectedCategoryIds}
+                    onChange={(ids) => {
+                      setSelectedCategoryIds(ids as Id<"categories">[]);
+                      setPage(0);
+                    }}
+                    placeholder="Categories"
+                  />
+                )}
+
+                {/* Status Multi-Select */}
+                <MultiSelectPopover
+                  options={STATUS_OPTIONS}
+                  value={selectedStatuses}
+                  onChange={(statuses) => {
+                    setSelectedStatuses(statuses as StatusFilter[]);
+                    setPage(0);
+                  }}
+                  placeholder="Status"
+                />
+
+                {/* Clear All */}
+                {(selectedAccountIds.length > 0 || selectedStatuses.length > 0 || selectedCategoryIds.length > 0 || dateRange || filterCategoryId || searchQuery) && (
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => {
-                      setSelectedAccountId(undefined);
-                      setShowFlaggedOnly(false);
-                      setShowUncategorizedOnly(false);
+                      setSelectedAccountIds([]);
+                      setSelectedStatuses([]);
                       setSelectedCategoryIds([]);
+                      setSearchQuery("");
                       clearAllUrlFilters();
                       setPage(0);
                     }}
@@ -408,9 +464,23 @@ export default function TransactionsPage() {
               </div>
 
               {/* Active Filter Badges */}
-              {(dateRange || filteredCategory) && (
-                <div className="flex items-center gap-2 mt-4 pt-4 border-t border-border">
+              {(searchQuery || dateRange || selectedAccountIds.length > 0 || selectedCategoryIds.length > 0 || selectedStatuses.length > 0 || filteredCategory) && (
+                <div className="flex items-center gap-2 mt-4 pt-4 border-t border-border flex-wrap">
                   <span className="text-xs text-muted-foreground">Active filters:</span>
+                  {searchQuery && (
+                    <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-primary/10 text-primary rounded-full">
+                      Search: &quot;{searchQuery}&quot;
+                      <button
+                        onClick={() => {
+                          setSearchQuery("");
+                          setPage(0);
+                        }}
+                        className="ml-1 hover:text-primary-foreground"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  )}
                   {dateRange && (
                     <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-primary/10 text-primary rounded-full">
                       <Calendar className="w-3 h-3" />
@@ -424,6 +494,56 @@ export default function TransactionsPage() {
                       </button>
                     </span>
                   )}
+                  {selectedAccountIds.length > 0 && (
+                    <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-primary/10 text-primary rounded-full">
+                      <Building2 className="w-3 h-3" />
+                      {selectedAccountIds.length} {selectedAccountIds.length === 1 ? "Account" : "Accounts"}
+                      <button
+                        onClick={() => {
+                          setSelectedAccountIds([]);
+                          setPage(0);
+                        }}
+                        className="ml-1 hover:text-primary-foreground"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  )}
+                  {selectedCategoryIds.length > 0 && (
+                    <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-primary/10 text-primary rounded-full">
+                      <Filter className="w-3 h-3" />
+                      {selectedCategoryIds.length} {selectedCategoryIds.length === 1 ? "Category" : "Categories"}
+                      <button
+                        onClick={() => {
+                          setSelectedCategoryIds([]);
+                          setPage(0);
+                        }}
+                        className="ml-1 hover:text-primary-foreground"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  )}
+                  {selectedStatuses.map((status) => (
+                    <span key={status} className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-primary/10 text-primary rounded-full">
+                      {status === "flagged" && <Flag className="w-3 h-3" />}
+                      {status === "uncategorized" && <CircleSlash className="w-3 h-3" />}
+                      {status === "linked" && <Link2 className="w-3 h-3" />}
+                      {status.charAt(0).toUpperCase() + status.slice(1)}
+                      <button
+                        onClick={() => {
+                          setSelectedStatuses(selectedStatuses.filter((s) => s !== status));
+                          if (statusFromParam === status) {
+                            updateUrlParams({ category: null });
+                          }
+                          setPage(0);
+                        }}
+                        className="ml-1 hover:text-primary-foreground"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
                   {filteredCategory && (
                     <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-primary/10 text-primary rounded-full">
                       Category: {filteredCategory.name}
