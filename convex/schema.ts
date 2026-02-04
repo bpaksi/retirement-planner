@@ -270,6 +270,107 @@ export default defineSchema({
   }).index("by_type", ["type"]),
 
   // ============================================
+  // RETIREMENT PROFILE
+  // ============================================
+  retirementProfile: defineTable({
+    retirementDate: v.number(), // timestamp
+    currentAge: v.number(),
+    annualSpending: v.number(),
+    isSpendingAutoCalculated: v.boolean(),
+  }),
+
+  // ============================================
+  // SOCIAL SECURITY
+  // ============================================
+  socialSecurity: defineTable({
+    // Benefits at key claiming ages (monthly amounts from SSA statement)
+    benefitAt62: v.number(), // Reduced early benefit
+    benefitAt67: v.number(), // Full retirement age benefit
+    benefitAt70: v.number(), // Maximum delayed benefit
+    // Birth date for age calculations
+    birthYear: v.number(),
+    birthMonth: v.number(), // 1-12
+    // COLA assumption for future benefit growth
+    colaRate: v.number(), // e.g., 0.02 for 2%
+    // When to claim (for projections)
+    plannedClaimingAge: v.optional(v.number()),
+    // Spouse info (optional)
+    hasSpouse: v.optional(v.boolean()),
+    spouseBenefitAt67: v.optional(v.number()),
+    spouseBirthYear: v.optional(v.number()),
+    spousePlannedClaimingAge: v.optional(v.number()),
+    updatedAt: v.number(),
+  }),
+
+  // ============================================
+  // MONTE CARLO ASSUMPTIONS
+  // ============================================
+  monteCarloAssumptions: defineTable({
+    // Return assumptions (REAL returns, after inflation)
+    realReturn: v.number(), // e.g., 0.05 for 5%
+    volatility: v.number(), // e.g., 0.12 for 12% std dev
+    // Time horizon
+    planToAge: v.number(), // e.g., 95
+    // Target success rate
+    targetSuccessRate: v.number(), // e.g., 0.90 for 90%
+    // Simulation parameters
+    iterations: v.optional(v.number()), // default: 1000
+    // Part-time work in early retirement (optional)
+    partTimeAnnualIncome: v.optional(v.number()),
+    partTimeYears: v.optional(v.number()),
+    // Legacy goal (optional)
+    legacyTarget: v.optional(v.number()),
+    updatedAt: v.number(),
+  }),
+
+  // ============================================
+  // ONE-TIME EVENTS (for projections)
+  // ============================================
+  oneTimeEvents: defineTable({
+    name: v.string(),
+    year: v.number(),
+    amount: v.number(), // positive = income, negative = expense
+    category: v.optional(v.string()), // e.g., "travel", "home", "vehicle", "medical"
+    notes: v.optional(v.string()),
+    createdAt: v.number(),
+  }).index("by_year", ["year"]),
+
+  // ============================================
+  // ANNUAL BUDGETS (additional spending categories for projections)
+  // ============================================
+  annualBudgets: defineTable({
+    name: v.string(), // e.g., "Travel", "Charitable Giving"
+    annualAmount: v.number(),
+    startYear: v.optional(v.number()), // when this budget starts (default: retirement)
+    endYear: v.optional(v.number()), // when this budget ends (default: never)
+    notes: v.optional(v.string()),
+    createdAt: v.number(),
+  }),
+
+  // ============================================
+  // GUARDRAILS CONFIGURATION
+  // ============================================
+  guardrailsConfig: defineTable({
+    isEnabled: v.boolean(),
+    // Upper guardrail: when portfolio exceeds this % above initial, increase spending
+    upperThresholdPercent: v.number(), // e.g., 0.20 = 20% above target
+    // Lower guardrail: when portfolio falls this % below initial, decrease spending
+    lowerThresholdPercent: v.number(), // e.g., 0.20 = 20% below target
+    // How much to adjust spending when guardrail is triggered
+    spendingAdjustmentPercent: v.number(), // e.g., 0.10 = 10% increase/decrease
+    // Floor and ceiling for spending (absolute values)
+    spendingFloor: v.optional(v.number()), // minimum annual spending
+    spendingCeiling: v.optional(v.number()), // maximum annual spending
+    // Strategy type
+    strategyType: v.union(
+      v.literal("percentage"), // adjust by percentage of current spending
+      v.literal("fixed") // adjust by fixed dollar amount
+    ),
+    fixedAdjustmentAmount: v.optional(v.number()), // used when strategyType is "fixed"
+    updatedAt: v.number(),
+  }),
+
+  // ============================================
   // SETTINGS
   // ============================================
   settings: defineTable({
@@ -305,6 +406,35 @@ export default defineSchema({
     changePercent: v.optional(v.number()),
     updatedAt: v.number(),
   }).index("by_symbol", ["symbol"]),
+
+  // ============================================
+  // MONTE CARLO CACHE
+  // ============================================
+  monteCarloCache: defineTable({
+    inputsHash: v.string(), // Hash of all inputs to detect changes
+    results: v.object({
+      successRate: v.number(),
+      iterations: v.number(),
+      success: v.object({
+        count: v.number(),
+        medianEndingBalance: v.number(),
+        p10EndingBalance: v.number(),
+        p90EndingBalance: v.number(),
+      }),
+      failure: v.object({
+        count: v.number(),
+        averageYearsLasted: v.number(),
+        medianYearsLasted: v.number(),
+        worstCase: v.number(),
+      }),
+      maxWithdrawal: v.optional(v.object({
+        amount: v.number(),
+        rate: v.number(),
+      })),
+    }),
+    createdAt: v.number(),
+    expiresAt: v.number(), // Auto-expire after 24 hours
+  }).index("by_hash", ["inputsHash"]),
 
   // ============================================
   // ALLOCATION TARGETS
