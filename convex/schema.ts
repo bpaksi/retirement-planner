@@ -235,6 +235,12 @@ export default defineSchema({
     extraPaymentMonthly: v.optional(v.number()), // Extra principal payment per month
     payoffDate: v.optional(v.number()),
     linkedAccountId: v.optional(v.id("accounts")),
+    // Scheduled one-time payments for payoff calculator
+    scheduledPayments: v.optional(v.array(v.object({
+      amount: v.number(),
+      date: v.number(),
+      description: v.optional(v.string()),
+    }))),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
