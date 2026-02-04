@@ -1,11 +1,12 @@
 import Papa from "papaparse";
 import { capitalOneParser } from "./capitalOne";
 import { edwardJonesParser } from "./edwardJones";
+import { usBankParser } from "./usBank";
 import { suggestColumnMapping, parseWithCustomMapping } from "./generic";
 import { CSVParser, ParsedTransaction, ColumnMapping, ParseResult } from "./types";
 
 // Register all available parsers
-const PARSERS: CSVParser[] = [capitalOneParser, edwardJonesParser];
+const PARSERS: CSVParser[] = [capitalOneParser, edwardJonesParser, usBankParser];
 
 /**
  * Parse a CSV file, auto-detecting the format if possible
@@ -106,3 +107,4 @@ export type { CSVParser, ParsedTransaction, ColumnMapping, ParseResult };
 export { suggestColumnMapping, parseWithCustomMapping };
 export { capitalOneParser } from "./capitalOne";
 export { edwardJonesParser } from "./edwardJones";
+export { usBankParser } from "./usBank";

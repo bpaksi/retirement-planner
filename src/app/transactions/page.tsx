@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery } from "convex/react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { format, parseISO, startOfDay, endOfDay } from "date-fns";
+import { DateRange } from "react-day-picker";
 import { api } from "../../../convex/_generated/api";
 import { Id } from "../../../convex/_generated/dataModel";
 import { Sidebar } from "@/components/layout/Sidebar";
@@ -24,6 +26,7 @@ import {
   TableCell,
 } from "@/components/ui/Table";
 import { ImportWizard } from "@/components/import/ImportWizard";
+import { DateRangePicker } from "@/components/ui/DateRangePicker";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import {
   Upload,
@@ -37,6 +40,7 @@ import {
   ArrowUp,
   ArrowDown,
   HelpCircle,
+  Calendar,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Dialog } from "@/components/ui/Dialog";
@@ -58,6 +62,18 @@ export default function TransactionsPage() {
   const importParam = searchParams.get("import");
   const accountIdParam = searchParams.get("accountId") as Id<"accounts"> | null;
 
+  // Date range and category from URL params
+  const startDateParam = searchParams.get("startDate");
+  const endDateParam = searchParams.get("endDate");
+  const categoryIdParamRaw = searchParams.get("category");
+  // Validate category ID looks like a valid Convex ID (not a word like "uncategorized")
+  // Convex IDs contain a mix of letters and numbers, so require at least one digit
+  const isValidConvexId = (id: string | null): id is string =>
+    id !== null && id.length >= 10 && /^[a-z0-9]+$/i.test(id) && /\d/.test(id);
+  const categoryIdParam = isValidConvexId(categoryIdParamRaw)
+    ? (categoryIdParamRaw as Id<"categories">)
+    : null;
+
   const [showImportWizard, setShowImportWizard] = useState(importParam === "true");
   const [importAccountId, setImportAccountId] = useState<Id<"accounts"> | undefined>(
     accountIdParam || undefined
@@ -78,6 +94,18 @@ export default function TransactionsPage() {
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<Id<"categories">[]>([]);
 
+  // Parse date range from URL params
+  const dateRange: DateRange | undefined = useMemo(() => {
+    if (!startDateParam && !endDateParam) return undefined;
+    return {
+      from: startDateParam ? parseISO(startDateParam) : undefined,
+      to: endDateParam ? parseISO(endDateParam) : undefined,
+    };
+  }, [startDateParam, endDateParam]);
+
+  // Filter category ID from URL (separate from multi-select)
+  const filterCategoryId = categoryIdParam || undefined;
+
   // Handle URL param changes
   useEffect(() => {
     if (importParam === "true") {
@@ -85,6 +113,65 @@ export default function TransactionsPage() {
       setImportAccountId(accountIdParam || undefined);
     }
   }, [importParam, accountIdParam]);
+
+  // Update URL with filter params
+  const updateUrlParams = (params: {
+    startDate?: string | null;
+    endDate?: string | null;
+    category?: string | null;
+  }) => {
+    const newParams = new URLSearchParams(searchParams.toString());
+
+    if (params.startDate !== undefined) {
+      if (params.startDate) {
+        newParams.set("startDate", params.startDate);
+      } else {
+        newParams.delete("startDate");
+      }
+    }
+    if (params.endDate !== undefined) {
+      if (params.endDate) {
+        newParams.set("endDate", params.endDate);
+      } else {
+        newParams.delete("endDate");
+      }
+    }
+    if (params.category !== undefined) {
+      if (params.category) {
+        newParams.set("category", params.category);
+      } else {
+        newParams.delete("category");
+      }
+    }
+
+    const queryString = newParams.toString();
+    router.replace(`/transactions${queryString ? `?${queryString}` : ""}`);
+  };
+
+  // Handle date range change
+  const handleDateRangeChange = (range: DateRange | undefined) => {
+    setPage(0);
+    if (!range) {
+      updateUrlParams({ startDate: null, endDate: null });
+    } else {
+      updateUrlParams({
+        startDate: range.from ? format(range.from, "yyyy-MM-dd") : null,
+        endDate: range.to ? format(range.to, "yyyy-MM-dd") : null,
+      });
+    }
+  };
+
+  // Clear category filter from URL
+  const clearCategoryFilter = () => {
+    updateUrlParams({ category: null });
+    setPage(0);
+  };
+
+  // Clear all URL-based filters
+  const clearAllUrlFilters = () => {
+    updateUrlParams({ startDate: null, endDate: null, category: null });
+    setPage(0);
+  };
 
   // Clear URL params when closing import wizard
   const handleCloseImport = () => {
@@ -98,11 +185,22 @@ export default function TransactionsPage() {
 
   const pageSize = 25;
 
+  // Convert date range to timestamps for query
+  const startDateTimestamp = dateRange?.from
+    ? startOfDay(dateRange.from).getTime()
+    : undefined;
+  const endDateTimestamp = dateRange?.to
+    ? endOfDay(dateRange.to).getTime()
+    : undefined;
+
   const transactions = useQuery(api.transactions.queries.list, {
     accountId: selectedAccountId,
     flaggedOnly: showFlaggedOnly || undefined,
     uncategorizedOnly: showUncategorizedOnly || undefined,
+    categoryId: filterCategoryId,
     categoryIds: selectedCategoryIds.length > 0 ? selectedCategoryIds : undefined,
+    startDate: startDateTimestamp,
+    endDate: endDateTimestamp,
     limit: pageSize,
     offset: page * pageSize,
     sortBy,
@@ -111,6 +209,11 @@ export default function TransactionsPage() {
 
   const accounts = useQuery(api.accounts.queries.list, { activeOnly: true });
   const categories = useQuery(api.categories.queries.list);
+
+  // Get filtered category name for display
+  const filteredCategory = filterCategoryId
+    ? categories?.find((c) => c._id === filterCategoryId)
+    : null;
 
   const handleCategoryUpdateComplete = (count: number) => {
     setEditingTransaction(null);
@@ -170,6 +273,12 @@ export default function TransactionsPage() {
                   <Filter className="w-4 h-4 text-muted-foreground" />
                   <span className="text-sm font-medium">Filters:</span>
                 </div>
+
+                <DateRangePicker
+                  value={dateRange}
+                  onChange={handleDateRangeChange}
+                  placeholder="Date range"
+                />
 
                 <Select
                   value={selectedAccountId || ""}
@@ -280,7 +389,7 @@ export default function TransactionsPage() {
                   Uncategorized
                 </Button>
 
-                {(selectedAccountId || showFlaggedOnly || showUncategorizedOnly || selectedCategoryIds.length > 0) && (
+                {(selectedAccountId || showFlaggedOnly || showUncategorizedOnly || selectedCategoryIds.length > 0 || dateRange || filterCategoryId) && (
                   <Button
                     variant="ghost"
                     size="sm"
@@ -289,13 +398,45 @@ export default function TransactionsPage() {
                       setShowFlaggedOnly(false);
                       setShowUncategorizedOnly(false);
                       setSelectedCategoryIds([]);
+                      clearAllUrlFilters();
                       setPage(0);
                     }}
                   >
-                    Clear Filters
+                    Clear All
                   </Button>
                 )}
               </div>
+
+              {/* Active Filter Badges */}
+              {(dateRange || filteredCategory) && (
+                <div className="flex items-center gap-2 mt-4 pt-4 border-t border-border">
+                  <span className="text-xs text-muted-foreground">Active filters:</span>
+                  {dateRange && (
+                    <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-primary/10 text-primary rounded-full">
+                      <Calendar className="w-3 h-3" />
+                      {dateRange.from && format(dateRange.from, "MMM d, yyyy")}
+                      {dateRange.to && ` - ${format(dateRange.to, "MMM d, yyyy")}`}
+                      <button
+                        onClick={() => handleDateRangeChange(undefined)}
+                        className="ml-1 hover:text-primary-foreground"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  )}
+                  {filteredCategory && (
+                    <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-primary/10 text-primary rounded-full">
+                      Category: {filteredCategory.name}
+                      <button
+                        onClick={clearCategoryFilter}
+                        className="ml-1 hover:text-primary-foreground"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
 

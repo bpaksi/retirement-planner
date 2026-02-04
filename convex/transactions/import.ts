@@ -20,6 +20,16 @@ export const importBatch = mutation({
     const batchId = `import_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const now = Date.now();
 
+    // Get the account to determine type-specific handling
+    const account = await ctx.db.get(args.accountId);
+    if (!account) {
+      throw new Error("Account not found");
+    }
+
+    // Loan accounts: payments are stored as positive (debt reduction)
+    // For loan accounts, we keep amounts positive as provided
+    const isLoanAccount = account.type === "loan";
+
     // Get all categories for categorization
     const categories = await ctx.db.query("categories").collect();
     const categoryByName = new Map(categories.map((c) => [c.name, c._id]));
@@ -103,6 +113,9 @@ export const importBatch = mutation({
       }
 
       // Insert the transaction
+      // Amount handling by account type:
+      // - Loan accounts: payments are positive (debt reduction)
+      // - Other accounts: amounts as provided by parser
       try {
         await ctx.db.insert("transactions", {
           accountId: args.accountId,
