@@ -1,9 +1,18 @@
 "use client";
 
-import { useState } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../../convex/_generated/api";
-import { Id } from "../../../../convex/_generated/dataModel";
+import { useState, useEffect, useCallback } from "react";
+import {
+  fetchRulesWithCategories,
+  fetchCategories,
+  fetchTransactions,
+} from "@/app/actions/data";
+import type { Category } from "@/db/queries/categories";
+import {
+  createCategorizationRule,
+  updateCategorizationRule,
+  deleteCategorizationRule,
+} from "@/app/actions/categorizationRules";
+import { recategorizeUncategorized } from "@/app/actions/transactions";
 import { Sidebar } from "@/components/layout/Sidebar";
 import {
   Card,
@@ -43,19 +52,38 @@ import {
   AlertCircle,
   CheckCircle2,
   RefreshCw,
-  Download,
 } from "lucide-react";
 import Link from "next/link";
 
+// Type for rule with its related category
+type RuleWithCategory = Awaited<ReturnType<typeof fetchRulesWithCategories>>[number];
+
 type RuleFormData = {
   pattern: string;
-  categoryId: Id<"categories"> | "";
+  categoryId: string;
   priority: number;
+};
+
+type RuleStats = {
+  uncategorizedCount: number;
+  totalTransactions: number;
+  activeRules: number;
+  totalRules: number;
+  systemRules: number;
+  userRules: number;
+  learnedRules: number;
+};
+
+type TestResult = {
+  valid: boolean;
+  matchCount: number;
+  matches: { description: string }[];
+  error?: string;
 };
 
 export default function RulesPage() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
-  const [editingRule, setEditingRule] = useState<Id<"categorizationRules"> | null>(null);
+  const [editingRule, setEditingRule] = useState<string | null>(null);
   const [testDialogOpen, setTestDialogOpen] = useState(false);
   const [testPattern, setTestPattern] = useState("");
   const [formData, setFormData] = useState<RuleFormData>({
@@ -65,20 +93,10 @@ export default function RulesPage() {
   });
   const [formError, setFormError] = useState<string | null>(null);
 
-  const rules = useQuery(api.categorizationRules.queries.list);
-  const categories = useQuery(api.categories.queries.list);
-  const stats = useQuery(api.categorizationRules.queries.getStats);
-  const testResult = useQuery(
-    api.categorizationRules.queries.testPattern,
-    testPattern ? { pattern: testPattern, limit: 10 } : "skip"
-  );
-
-  const createRule = useMutation(api.categorizationRules.mutations.create);
-  const updateRule = useMutation(api.categorizationRules.mutations.update);
-  const removeRule = useMutation(api.categorizationRules.mutations.remove);
-  const toggleActive = useMutation(api.categorizationRules.mutations.toggleActive);
-  const recategorize = useMutation(api.transactions.mutations.recategorizeUncategorized);
-  const addExpandedRules = useMutation(api.seed.addExpandedRules);
+  const [rules, setRules] = useState<RuleWithCategory[] | null>(null);
+  const [categories, setCategories] = useState<Category[] | null>(null);
+  const [stats, setStats] = useState<RuleStats | null>(null);
+  const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   const [isRecategorizing, setIsRecategorizing] = useState(false);
   const [recategorizeResult, setRecategorizeResult] = useState<{
@@ -86,11 +104,95 @@ export default function RulesPage() {
     stillUncategorized: number;
   } | null>(null);
 
-  const [isExpanding, setIsExpanding] = useState(false);
-  const [expandResult, setExpandResult] = useState<{
-    added: number;
-    skipped: number;
-  } | null>(null);
+  const loadData = useCallback(async () => {
+    try {
+      const [rulesData, categoriesData, transactionsData] = await Promise.all([
+        fetchRulesWithCategories(),
+        fetchCategories(),
+        fetchTransactions({ limit: 10000 }),
+      ]);
+
+      setRules(rulesData);
+      setCategories(categoriesData);
+
+      // Calculate stats
+      const totalTransactions = transactionsData.total;
+
+      // Count uncategorized from full set (not just paginated)
+      const uncategorizedData = await fetchTransactions({
+        uncategorizedOnly: true,
+        limit: 10000
+      });
+
+      setStats({
+        uncategorizedCount: uncategorizedData.total,
+        totalTransactions,
+        activeRules: rulesData.filter((r) => r.isActive).length,
+        totalRules: rulesData.length,
+        systemRules: rulesData.filter((r) => r.createdBy === "system").length,
+        userRules: rulesData.filter((r) => r.createdBy === "user").length,
+        learnedRules: rulesData.filter((r) => r.createdBy === "learned").length,
+      });
+    } catch (error) {
+      console.error("Failed to load data:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // Test pattern effect
+  useEffect(() => {
+    if (!testPattern) {
+      setTestResult(null);
+      return;
+    }
+
+    const runTest = async () => {
+      try {
+        // Validate regex
+        new RegExp(testPattern, "i");
+      } catch {
+        setTestResult({
+          valid: false,
+          matchCount: 0,
+          matches: [],
+          error: "Invalid regex pattern",
+        });
+        return;
+      }
+
+      try {
+        const transactionsData = await fetchTransactions({ limit: 10000 });
+        const regex = new RegExp(testPattern, "i");
+        const matches = transactionsData.transactions
+          .filter((t) => regex.test(t.description))
+          .slice(0, 10)
+          .map((t) => ({ description: t.description }));
+
+        const allMatches = transactionsData.transactions.filter((t) =>
+          regex.test(t.description)
+        );
+
+        setTestResult({
+          valid: true,
+          matchCount: allMatches.length,
+          matches,
+        });
+      } catch {
+        setTestResult({
+          valid: false,
+          matchCount: 0,
+          matches: [],
+          error: "Failed to test pattern",
+        });
+      }
+    };
+
+    const debounce = setTimeout(runTest, 300);
+    return () => clearTimeout(debounce);
+  }, [testPattern]);
 
   const handleOpenAdd = () => {
     setFormData({ pattern: "", categoryId: "", priority: 50 });
@@ -98,8 +200,8 @@ export default function RulesPage() {
     setIsAddDialogOpen(true);
   };
 
-  const handleOpenEdit = (ruleId: Id<"categorizationRules">) => {
-    const rule = rules?.find((r) => r._id === ruleId);
+  const handleOpenEdit = (ruleId: string) => {
+    const rule = rules?.find((r) => r.id === ruleId);
     if (rule) {
       setFormData({
         pattern: rule.pattern,
@@ -144,62 +246,63 @@ export default function RulesPage() {
 
     try {
       if (editingRule) {
-        await updateRule({
+        await updateCategorizationRule({
           id: editingRule,
           pattern: formData.pattern,
-          categoryId: formData.categoryId as Id<"categories">,
+          categoryId: formData.categoryId,
           priority: formData.priority,
         });
       } else {
-        await createRule({
+        await createCategorizationRule({
           pattern: formData.pattern,
-          categoryId: formData.categoryId as Id<"categories">,
+          categoryId: formData.categoryId,
           priority: formData.priority,
         });
       }
       handleCloseDialog();
+      await loadData();
     } catch (e) {
       setFormError(e instanceof Error ? e.message : "Failed to save rule");
     }
   };
 
-  const handleDelete = async (id: Id<"categorizationRules">) => {
+  const handleDelete = async (id: string) => {
     if (confirm("Are you sure you want to delete this rule?")) {
       try {
-        await removeRule({ id });
+        await deleteCategorizationRule(id);
+        await loadData();
       } catch (e) {
         alert(e instanceof Error ? e.message : "Failed to delete rule");
       }
     }
   };
 
-  const handleToggle = async (id: Id<"categorizationRules">) => {
-    await toggleActive({ id });
+  const handleToggle = async (id: string) => {
+    const rule = rules?.find((r) => r.id === id);
+    if (rule) {
+      try {
+        await updateCategorizationRule({
+          id,
+          isActive: !rule.isActive,
+        });
+        await loadData();
+      } catch (e) {
+        alert(e instanceof Error ? e.message : "Failed to toggle rule");
+      }
+    }
   };
 
   const handleRecategorize = async () => {
     setIsRecategorizing(true);
     setRecategorizeResult(null);
     try {
-      const result = await recategorize({});
+      const result = await recategorizeUncategorized();
       setRecategorizeResult(result);
+      await loadData();
     } catch (e) {
       alert(e instanceof Error ? e.message : "Failed to recategorize");
     } finally {
       setIsRecategorizing(false);
-    }
-  };
-
-  const handleExpandRules = async () => {
-    setIsExpanding(true);
-    setExpandResult(null);
-    try {
-      const result = await addExpandedRules({});
-      setExpandResult({ added: result.added, skipped: result.skipped });
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to add rules");
-    } finally {
-      setIsExpanding(false);
     }
   };
 
@@ -252,7 +355,7 @@ export default function RulesPage() {
           </div>
 
           {/* Stats Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
             <Card>
               <CardContent className="pt-6">
                 <p className="text-sm text-muted-foreground">Uncategorized</p>
@@ -311,28 +414,6 @@ export default function RulesPage() {
                 )}
               </CardContent>
             </Card>
-
-            <Card>
-              <CardContent className="pt-6">
-                <Button
-                  className="w-full"
-                  variant="outline"
-                  onClick={handleExpandRules}
-                  disabled={isExpanding}
-                >
-                  <Download className={`h-4 w-4 mr-2 ${isExpanding ? "animate-pulse" : ""}`} />
-                  Add More Rules
-                </Button>
-                {expandResult && (
-                  <p className="text-xs text-muted-foreground mt-2 text-center">
-                    Added {expandResult.added} new rules
-                  </p>
-                )}
-                <p className="text-xs text-muted-foreground mt-2 text-center">
-                  50+ expanded patterns
-                </p>
-              </CardContent>
-            </Card>
           </div>
 
           {/* Rules Table */}
@@ -359,10 +440,10 @@ export default function RulesPage() {
                   </TableHeader>
                   <TableBody>
                     {rules.map((rule) => (
-                      <TableRow key={rule._id} className={!rule.isActive ? "opacity-50" : ""}>
+                      <TableRow key={rule.id} className={!rule.isActive ? "opacity-50" : ""}>
                         <TableCell>
                           <button
-                            onClick={() => handleToggle(rule._id)}
+                            onClick={() => handleToggle(rule.id)}
                             className="text-muted-foreground hover:text-foreground"
                           >
                             {rule.isActive ? (
@@ -400,7 +481,7 @@ export default function RulesPage() {
                             <Button
                               variant="ghost"
                               size="icon"
-                              onClick={() => handleOpenEdit(rule._id)}
+                              onClick={() => handleOpenEdit(rule.id)}
                             >
                               <Pencil className="h-4 w-4" />
                             </Button>
@@ -408,7 +489,7 @@ export default function RulesPage() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                onClick={() => handleDelete(rule._id)}
+                                onClick={() => handleDelete(rule.id)}
                               >
                                 <Trash2 className="h-4 w-4 text-destructive" />
                               </Button>
@@ -465,12 +546,12 @@ export default function RulesPage() {
               <Select
                 value={formData.categoryId}
                 onChange={(e) =>
-                  setFormData({ ...formData, categoryId: e.target.value as Id<"categories"> })
+                  setFormData({ ...formData, categoryId: e.target.value })
                 }
               >
                 <option value="">Select a category...</option>
                 {categories?.map((cat) => (
-                  <option key={cat._id} value={cat._id}>
+                  <option key={cat.id} value={cat.id}>
                     {cat.name}
                   </option>
                 ))}

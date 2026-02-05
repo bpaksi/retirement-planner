@@ -1,9 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
-import { Id } from "../../../convex/_generated/dataModel";
+import { useState, useEffect } from "react";
+import { fetchIncomeSources } from "@/app/actions/data";
+import type { IncomeSource } from "@/db/queries/incomeSources";
+import {
+  createIncomeSource,
+  updateIncomeSource,
+  deleteIncomeSource,
+} from "@/app/actions/incomeSources";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -26,18 +30,6 @@ type IncomeSourceType =
   | "rental"
   | "dividends"
   | "other";
-
-interface IncomeSource {
-  _id: Id<"incomeSources">;
-  type: IncomeSourceType;
-  name: string;
-  annualAmount: number;
-  startDate?: number;
-  endDate?: number;
-  growthRate: number;
-  isTaxable: boolean;
-  createdAt: number;
-}
 
 const TYPE_LABELS: Record<IncomeSourceType, string> = {
   social_security: "Social Security",
@@ -81,16 +73,25 @@ const initialFormData: FormData = {
 
 export function IncomeSourcesList() {
   const [showDialog, setShowDialog] = useState(false);
-  const [editingId, setEditingId] = useState<Id<"incomeSources"> | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<FormData>(initialFormData);
   const [isSaving, setIsSaving] = useState(false);
+  const [incomeSources, setIncomeSources] = useState<IncomeSource[] | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const incomeSources = useQuery(api.incomeSources.queries.list);
-  const createSource = useMutation(api.incomeSources.mutations.create);
-  const updateSource = useMutation(api.incomeSources.mutations.update);
-  const removeSource = useMutation(api.incomeSources.mutations.remove);
+  const loadData = async () => {
+    setIsLoading(true);
+    try {
+      const data = await fetchIncomeSources();
+      setIncomeSources(data);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-  const isLoading = incomeSources === undefined;
+  useEffect(() => {
+    loadData();
+  }, []);
 
   const openCreateDialog = () => {
     setEditingId(null);
@@ -99,9 +100,9 @@ export function IncomeSourcesList() {
   };
 
   const openEditDialog = (source: IncomeSource) => {
-    setEditingId(source._id);
+    setEditingId(source.id);
     setFormData({
-      type: source.type,
+      type: source.type as IncomeSourceType,
       name: source.name,
       annualAmount: source.annualAmount.toString(),
       startDate: source.startDate
@@ -134,20 +135,22 @@ export function IncomeSourcesList() {
       };
 
       if (editingId) {
-        await updateSource({ id: editingId, ...data });
+        await updateIncomeSource({ id: editingId, ...data });
       } else {
-        await createSource(data);
+        await createIncomeSource(data);
       }
 
       setShowDialog(false);
+      await loadData();
     } finally {
       setIsSaving(false);
     }
   };
 
-  const handleDelete = async (id: Id<"incomeSources">) => {
+  const handleDelete = async (id: string) => {
     if (confirm("Are you sure you want to delete this income source?")) {
-      await removeSource({ id });
+      await deleteIncomeSource(id);
+      await loadData();
     }
   };
 
@@ -187,14 +190,14 @@ export function IncomeSourcesList() {
               <div className="space-y-3">
                 {incomeSources?.map((source) => (
                   <div
-                    key={source._id}
+                    key={source.id}
                     className="flex items-center justify-between p-3 rounded-lg bg-muted/50"
                   >
                     <div className="flex items-center gap-3">
                       <span
-                        className={`px-2 py-1 rounded text-xs font-medium ${TYPE_COLORS[source.type]}`}
+                        className={`px-2 py-1 rounded text-xs font-medium ${TYPE_COLORS[source.type as IncomeSourceType]}`}
                       >
-                        {TYPE_LABELS[source.type]}
+                        {TYPE_LABELS[source.type as IncomeSourceType]}
                       </span>
                       <div>
                         <p className="font-medium">{source.name}</p>
@@ -229,7 +232,7 @@ export function IncomeSourcesList() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => handleDelete(source._id)}
+                          onClick={() => handleDelete(source.id)}
                         >
                           <Trash2 className="w-4 h-4 text-destructive" />
                         </Button>

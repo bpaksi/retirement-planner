@@ -1,10 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../../convex/_generated/api";
-import { Id } from "../../../../convex/_generated/dataModel";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Breadcrumb } from "@/components/ui/Breadcrumb";
 import {
@@ -41,6 +38,20 @@ import {
   Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  fetchLiabilityById,
+  fetchAmortizationSchedule,
+  fetchForecastPayoff,
+  fetchCalculatedBalance,
+} from "@/app/actions/data";
+import type { Liability } from "@/db/queries/liabilities";
+import {
+  updateLiability,
+  syncLiabilityBalance,
+  addScheduledPayment,
+  removeScheduledPayment,
+  clearScheduledPayments,
+} from "@/app/actions/liabilities";
 
 const LIABILITY_ICONS = {
   mortgage: Home,
@@ -97,9 +108,19 @@ function getTodayDateString(): string {
   return new Date().toISOString().split("T")[0];
 }
 
+type AmortizationScheduleResult = NonNullable<Awaited<ReturnType<typeof fetchAmortizationSchedule>>>;
+type ForecastResult = NonNullable<Awaited<ReturnType<typeof fetchForecastPayoff>>>;
+type CalculatedBalanceResult = NonNullable<Awaited<ReturnType<typeof fetchCalculatedBalance>>>;
+
 export default function LiabilityDetailPage() {
   const params = useParams();
-  const liabilityId = params.id as Id<"liabilities">;
+  const liabilityId = params.id as string;
+
+  const [liability, setLiability] = useState<Liability | null>(null);
+  const [paymentSchedule, setPaymentSchedule] = useState<AmortizationScheduleResult | null>(null);
+  const [forecast, setForecast] = useState<ForecastResult | null>(null);
+  const [calculatedBalance, setCalculatedBalance] = useState<CalculatedBalanceResult | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   const [showSchedule, setShowSchedule] = useState(false);
   const [showCalculator, setShowCalculator] = useState(true);
@@ -120,30 +141,25 @@ export default function LiabilityDetailPage() {
     startDate: "",
   });
 
-  const liability = useQuery(api.liabilities.queries.get, { id: liabilityId });
+  const loadData = useCallback(async () => {
+    const liabilityData = await fetchLiabilityById(liabilityId);
+    if (liabilityData) {
+      setLiability(liabilityData);
+      const [schedule, payoffForecast, calcBalance] = await Promise.all([
+        fetchAmortizationSchedule(liabilityId),
+        fetchForecastPayoff({ id: liabilityId }),
+        fetchCalculatedBalance(liabilityId),
+      ]);
+      setPaymentSchedule(schedule);
+      setForecast(payoffForecast);
+      setCalculatedBalance(calcBalance);
+    }
+    setIsLoading(false);
+  }, [liabilityId]);
 
-  // Payment schedule uses only saved values from DB
-  const paymentSchedule = useQuery(
-    api.liabilities.queries.getPaymentSchedule,
-    { id: liabilityId }
-  );
-
-  // Forecast uses saved values only (for current applied state)
-  const forecast = useQuery(
-    api.liabilities.queries.forecastPayoff,
-    { id: liabilityId }
-  );
-
-  const calculatedBalance = useQuery(
-    api.liabilities.queries.getCalculatedBalance,
-    { id: liabilityId }
-  );
-
-  const updateLiability = useMutation(api.liabilities.mutations.update);
-  const syncBalance = useMutation(api.liabilities.mutations.syncBalanceFromTransactions);
-  const addScheduledPayment = useMutation(api.liabilities.mutations.addScheduledPayment);
-  const removeScheduledPayment = useMutation(api.liabilities.mutations.removeScheduledPayment);
-  const clearScheduledPayments = useMutation(api.liabilities.mutations.clearScheduledPayments);
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const handleSaveExtraPayment = async () => {
     if (!extraMonthly) return;
@@ -151,7 +167,8 @@ export default function LiabilityDetailPage() {
       id: liabilityId,
       extraPaymentMonthly: parseFloat(extraMonthly),
     });
-    setExtraMonthly(""); // Clear input after applying
+    setExtraMonthly("");
+    loadData();
   };
 
   const handleClearExtraMonthly = async () => {
@@ -159,38 +176,40 @@ export default function LiabilityDetailPage() {
       id: liabilityId,
       extraPaymentMonthly: 0,
     });
+    loadData();
   };
 
   const handleApplyOneTimePayment = async () => {
     if (!oneTimePayment || !oneTimePaymentDate) return;
     const amount = parseFloat(oneTimePayment);
-    const date = new Date(oneTimePaymentDate + "T12:00:00").getTime(); // Use noon to avoid timezone issues
-    await addScheduledPayment({
-      id: liabilityId,
+    const date = new Date(oneTimePaymentDate + "T12:00:00").getTime();
+    await addScheduledPayment(liabilityId, {
       amount,
       date,
       description: "One-time payment",
     });
-    setOneTimePayment(""); // Clear amount after applying
-    setOneTimePaymentDate(getTodayDateString()); // Reset date to today
+    setOneTimePayment("");
+    setOneTimePaymentDate(getTodayDateString());
+    loadData();
   };
 
   const handleRemoveScheduledPayment = async (index: number) => {
-    await removeScheduledPayment({
-      id: liabilityId,
-      index,
-    });
+    await removeScheduledPayment(liabilityId, index);
+    loadData();
   };
 
   const handleClearScheduledPayments = async () => {
-    await clearScheduledPayments({ id: liabilityId });
+    await clearScheduledPayments(liabilityId);
+    loadData();
   };
 
   const handleSyncBalance = async () => {
+    if (!calculatedBalance || "error" in calculatedBalance) return;
     setIsSyncing(true);
     try {
-      await syncBalance({ id: liabilityId });
+      await syncLiabilityBalance(liabilityId, calculatedBalance.calculatedBalance);
       setShowSyncConfirm(false);
+      loadData();
     } catch (error) {
       console.error("Failed to sync balance:", error);
     } finally {
@@ -215,12 +234,12 @@ export default function LiabilityDetailPage() {
 
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editForm.name) return;
+    if (!editForm.name || !liability) return;
 
     setIsEditing(true);
     try {
       const updates: {
-        id: Id<"liabilities">;
+        id: string;
         name?: string;
         originalAmount?: number;
         currentBalance?: number;
@@ -230,7 +249,7 @@ export default function LiabilityDetailPage() {
         minimumPayment?: number;
       } = { id: liabilityId };
 
-      if (editForm.name !== liability?.name) {
+      if (editForm.name !== liability.name) {
         updates.name = editForm.name;
       }
       if (editForm.originalAmount) {
@@ -250,9 +269,9 @@ export default function LiabilityDetailPage() {
       }
 
       // Recalculate minimum payment if relevant fields changed
-      const originalAmount = updates.originalAmount ?? liability?.originalAmount;
-      const interestRate = updates.interestRate ?? liability?.interestRate;
-      const termMonths = updates.termMonths ?? liability?.termMonths;
+      const originalAmount = updates.originalAmount ?? liability.originalAmount;
+      const interestRate = updates.interestRate ?? liability.interestRate;
+      const termMonths = updates.termMonths ?? liability.termMonths;
 
       if (originalAmount && interestRate && interestRate > 0 && termMonths) {
         const monthlyRate = interestRate / 12;
@@ -267,6 +286,7 @@ export default function LiabilityDetailPage() {
 
       await updateLiability(updates);
       setShowEditDialog(false);
+      loadData();
     } catch (error) {
       console.error("Failed to update liability:", error);
     } finally {
@@ -274,7 +294,7 @@ export default function LiabilityDetailPage() {
     }
   };
 
-  if (!liability) {
+  if (isLoading) {
     return (
       <div className="flex h-screen">
         <Sidebar />
@@ -287,12 +307,30 @@ export default function LiabilityDetailPage() {
     );
   }
 
+  if (!liability) {
+    return (
+      <div className="flex h-screen">
+        <Sidebar />
+        <main className="flex-1 overflow-auto">
+          <div className="p-8">
+            <div className="text-muted-foreground">Liability not found</div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   const Icon = LIABILITY_ICONS[liability.type] ?? Wallet;
   const hasAmortizationData =
     liability.originalAmount &&
     liability.termMonths &&
     liability.interestRate &&
     liability.startDate;
+
+  // Type guards for handling union types
+  const scheduleHasError = paymentSchedule && "error" in paymentSchedule;
+  const forecastHasError = forecast && "error" in forecast;
+  const calculatedBalanceHasError = calculatedBalance && "error" in calculatedBalance;
 
   return (
     <div className="flex h-screen">
@@ -355,7 +393,7 @@ export default function LiabilityDetailPage() {
                   <CardContent className="pt-4 pb-4">
                     <p className="text-sm text-muted-foreground">Interest Rate</p>
                     <p className="text-xl font-bold">
-                      {(liability.interestRate * 100).toFixed(3)}%
+                      {((liability.interestRate ?? 0) * 100).toFixed(3)}%
                     </p>
                   </CardContent>
                 </Card>
@@ -365,7 +403,7 @@ export default function LiabilityDetailPage() {
                     <p className="text-xl font-bold">
                       {liability.originalAmount
                         ? formatCurrency(liability.originalAmount)
-                        : "—"}
+                        : "-"}
                     </p>
                   </CardContent>
                 </Card>
@@ -373,9 +411,9 @@ export default function LiabilityDetailPage() {
                   <CardContent className="pt-4 pb-4">
                     <p className="text-sm text-muted-foreground">Payoff Date</p>
                     <p className="text-xl font-bold text-primary">
-                      {forecast && !("error" in forecast) && forecast.baseline?.payoffDate
+                      {forecast && !forecastHasError && forecast.baseline?.payoffDate
                         ? formatDate(forecast.baseline.payoffDate)
-                        : "—"}
+                        : "-"}
                     </p>
                   </CardContent>
                 </Card>
@@ -392,7 +430,7 @@ export default function LiabilityDetailPage() {
                     <span>
                       {liability.termMonths
                         ? `${liability.termMonths} months (${(liability.termMonths / 12).toFixed(1)} years)`
-                        : "—"}
+                        : "-"}
                     </span>
                   </div>
                   <div className="flex justify-between">
@@ -400,7 +438,7 @@ export default function LiabilityDetailPage() {
                     <span>
                       {liability.startDate
                         ? formatDateFull(liability.startDate)
-                        : "—"}
+                        : "-"}
                     </span>
                   </div>
                   {liability.extraPaymentMonthly && liability.extraPaymentMonthly > 0 && (
@@ -439,7 +477,7 @@ export default function LiabilityDetailPage() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  {calculatedBalance && "error" in calculatedBalance ? (
+                  {calculatedBalanceHasError ? (
                     <div className="text-sm text-muted-foreground">
                       {calculatedBalance.error === "no_linked_account" && (
                         <p>Link an account to enable transaction-based balance calculation.</p>
@@ -506,12 +544,12 @@ export default function LiabilityDetailPage() {
                         <p>
                           {calculatedBalance.paymentCount} payment{calculatedBalance.paymentCount !== 1 ? "s" : ""} totaling {formatCurrency(calculatedBalance.totalPayments)}
                           {calculatedBalance.dateRange && (
-                            <> ({formatDateFull(calculatedBalance.dateRange.start)} – {formatDateFull(calculatedBalance.dateRange.end)})</>
+                            <> ({formatDateFull(calculatedBalance.dateRange.start)} - {formatDateFull(calculatedBalance.dateRange.end)})</>
                           )}
                         </p>
                         {calculatedBalance.totalInterest > 0 && (
                           <p className="text-xs">
-                            Principal paid: {formatCurrency(calculatedBalance.totalPrincipal)} · Interest paid: {formatCurrency(calculatedBalance.totalInterest)}
+                            Principal paid: {formatCurrency(calculatedBalance.totalPrincipal)} - Interest paid: {formatCurrency(calculatedBalance.totalInterest)}
                           </p>
                         )}
                       </div>
@@ -583,7 +621,7 @@ export default function LiabilityDetailPage() {
                     ? `+${formatCurrencyPrecise(liability.extraPaymentMonthly)}/mo extra`
                     : "No extra monthly payment"}
                   {liability.scheduledPayments && liability.scheduledPayments.length > 0 && (
-                    <> · {liability.scheduledPayments.length} scheduled payment{liability.scheduledPayments.length !== 1 ? "s" : ""}</>
+                    <> - {liability.scheduledPayments.length} scheduled payment{liability.scheduledPayments.length !== 1 ? "s" : ""}</>
                   )}
                 </p>
               </CardContent>
@@ -715,7 +753,7 @@ export default function LiabilityDetailPage() {
                 </div>
 
                 {/* Savings Summary: Shows current applied savings */}
-                {forecast && !("error" in forecast) && (
+                {forecast && !forecastHasError && (
                   (liability.extraPaymentMonthly && liability.extraPaymentMonthly > 0) ||
                   (liability.scheduledPayments && liability.scheduledPayments.length > 0)
                 ) && (forecast.savings.monthsSaved > 0 || forecast.savings.interestSaved > 0) && (
@@ -749,7 +787,7 @@ export default function LiabilityDetailPage() {
                 {/* Default message when no extra payments */}
                 {(!liability.extraPaymentMonthly || liability.extraPaymentMonthly === 0) &&
                  (!liability.scheduledPayments || liability.scheduledPayments.length === 0) &&
-                 forecast && !("error" in forecast) && (
+                 forecast && !forecastHasError && (
                   <p className="mt-4 text-sm text-muted-foreground">
                     Without extra payments, you&apos;ll pay{" "}
                     <span className="font-medium">
@@ -766,7 +804,7 @@ export default function LiabilityDetailPage() {
           </Card>
 
           {/* Payment Schedule - Full Width */}
-          {paymentSchedule && !("error" in paymentSchedule) && (
+          {paymentSchedule && !scheduleHasError && (
             <Card className="mt-6">
               <CardHeader className="pb-0">
                 <button
@@ -784,28 +822,28 @@ export default function LiabilityDetailPage() {
               {!showSchedule && (
                 <CardContent className="pt-2 pb-4">
                   <p className="text-sm text-muted-foreground">
-                    {paymentSchedule.actualPayments.length} past payment{paymentSchedule.actualPayments.length !== 1 ? "s" : ""} · {paymentSchedule.remainingPayments} remaining
+                    {paymentSchedule.schedule?.length ?? 0} payments - {paymentSchedule.summary?.totalPayments ?? 0} total
                   </p>
                 </CardContent>
               )}
-              {showSchedule && (
+              {showSchedule && paymentSchedule.schedule && (
                 <CardContent className="pt-4">
                   {/* Filter toggle and Summary */}
                   <div className="flex items-center justify-between mb-4">
-                    {paymentSchedule.actualPayments.length > 0 && (
+                    {paymentSchedule.summary && (
                       <div className="p-3 bg-muted/50 rounded-lg text-sm flex-1 mr-4">
                         <div className="grid grid-cols-3 gap-4 max-w-md">
                           <div>
-                            <p className="text-muted-foreground text-xs">Total Paid</p>
-                            <p className="font-medium">{formatCurrency(paymentSchedule.totalActualPayments)}</p>
+                            <p className="text-muted-foreground text-xs">Total Payments</p>
+                            <p className="font-medium">{paymentSchedule.summary.totalPayments}</p>
                           </div>
                           <div>
-                            <p className="text-muted-foreground text-xs">Principal Paid</p>
-                            <p className="font-medium text-success">{formatCurrency(paymentSchedule.totalActualPrincipal)}</p>
+                            <p className="text-muted-foreground text-xs">Total Interest</p>
+                            <p className="font-medium text-destructive">{formatCurrency(paymentSchedule.summary.totalInterest)}</p>
                           </div>
                           <div>
-                            <p className="text-muted-foreground text-xs">Interest Paid</p>
-                            <p className="font-medium text-destructive">{formatCurrency(paymentSchedule.totalActualInterest)}</p>
+                            <p className="text-muted-foreground text-xs">Interest Saved</p>
+                            <p className="font-medium text-success">{formatCurrency(paymentSchedule.summary.interestSaved)}</p>
                           </div>
                         </div>
                       </div>
@@ -817,7 +855,7 @@ export default function LiabilityDetailPage() {
                         onChange={(e) => setShowPastPayments(e.target.checked)}
                         className="rounded border-border"
                       />
-                      Show past payments
+                      Show all payments
                     </label>
                   </div>
 
@@ -826,8 +864,8 @@ export default function LiabilityDetailPage() {
                     <table className="w-full text-sm">
                       <thead className="bg-muted sticky top-0">
                         <tr>
+                          <th className="text-left p-3 font-medium">#</th>
                           <th className="text-left p-3 font-medium">Date</th>
-                          <th className="text-left p-3 font-medium">Description</th>
                           <th className="text-right p-3 font-medium">Payment</th>
                           <th className="text-right p-3 font-medium">Principal</th>
                           <th className="text-right p-3 font-medium">Interest</th>
@@ -835,15 +873,19 @@ export default function LiabilityDetailPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {/* Actual past payments */}
-                        {showPastPayments && paymentSchedule.actualPayments.map((row, idx) => (
+                        {(showPastPayments ? paymentSchedule.schedule : paymentSchedule.schedule.slice(0, 24)).map((row, idx) => (
                           <tr
-                            key={`actual-${idx}`}
-                            className="border-t border-border bg-background"
+                            key={`payment-${row.paymentNumber}-${idx}`}
+                            className={cn(
+                              "border-t border-border",
+                              row.balance === 0 && "bg-success/10"
+                            )}
                           >
-                            <td className="p-3">{formatDateFull(row.date)}</td>
-                            <td className="p-3 text-muted-foreground" title={row.description}>
-                              {row.description}
+                            <td className="p-3 text-muted-foreground">
+                              {row.paymentNumber}
+                            </td>
+                            <td className="p-3">
+                              {formatDateFull(row.date)}
                             </td>
                             <td className="p-3 text-right">
                               {formatCurrencyPrecise(row.payment)}
@@ -859,85 +901,13 @@ export default function LiabilityDetailPage() {
                             </td>
                           </tr>
                         ))}
-
-                        {/* Divider or hidden payments indicator */}
-                        {paymentSchedule.actualPayments.length > 0 && paymentSchedule.projectedPayments.length > 0 && (
-                          <tr className="border-t-2 border-primary/30">
-                            <td colSpan={6} className="p-2 text-center text-xs text-muted-foreground bg-primary/5">
-                              {!showPastPayments && (
-                                <span className="mr-2">
-                                  {paymentSchedule.actualPayments.length} past payment{paymentSchedule.actualPayments.length !== 1 ? "s" : ""} hidden ·
-                                </span>
-                              )}
-                              Projected Future Payments
-                              {liability.scheduledPayments && liability.scheduledPayments.length > 0 && (
-                                <span className="ml-2 text-primary font-medium">
-                                  (includes scheduled payments)
-                                </span>
-                              )}
-                            </td>
-                          </tr>
-                        )}
-
-                        {/* Projected future payments */}
-                        {paymentSchedule.projectedPayments.map((row, idx) => (
-                          <tr
-                            key={`projected-${row.paymentNumber}-${idx}`}
-                            className={cn(
-                              "border-t border-border",
-                              row.isSimulated
-                                ? "bg-primary/10 border-l-2 border-l-primary"
-                                : "bg-muted/30",
-                              row.balance === 0 && "bg-success/10"
-                            )}
-                          >
-                            <td className={cn(
-                              "p-3",
-                              row.isSimulated ? "text-primary" : "text-muted-foreground"
-                            )}>
-                              {formatDateFull(row.date)}
-                            </td>
-                            <td className={cn(
-                              "p-3 italic",
-                              row.isSimulated ? "text-primary" : "text-muted-foreground"
-                            )}>
-                              {row.description ?? (row.paymentNumber === 0
-                                ? "One-time payment"
-                                : `Payment #${row.paymentNumber}`)}
-                            </td>
-                            <td className={cn(
-                              "p-3 text-right",
-                              row.isSimulated ? "text-primary font-medium" : "text-muted-foreground"
-                            )}>
-                              {formatCurrencyPrecise(row.payment)}
-                            </td>
-                            <td className={cn(
-                              "p-3 text-right",
-                              row.isSimulated ? "text-success" : "text-success/70"
-                            )}>
-                              {formatCurrencyPrecise(row.principal)}
-                            </td>
-                            <td className={cn(
-                              "p-3 text-right",
-                              row.isSimulated ? "text-destructive" : "text-destructive/70"
-                            )}>
-                              {formatCurrencyPrecise(row.interest)}
-                            </td>
-                            <td className={cn(
-                              "p-3 text-right font-medium",
-                              row.isSimulated ? "text-primary" : "text-muted-foreground"
-                            )}>
-                              {formatCurrencyPrecise(row.balance)}
-                            </td>
-                          </tr>
-                        ))}
                       </tbody>
                     </table>
                   </div>
 
-                  {paymentSchedule.projectedPayoffDate && (
+                  {paymentSchedule.summary?.actualPayoffDate && (
                     <p className="mt-3 text-sm text-muted-foreground text-center">
-                      Projected payoff: <span className="font-medium text-primary">{formatDate(paymentSchedule.projectedPayoffDate)}</span>
+                      Projected payoff: <span className="font-medium text-primary">{formatDate(paymentSchedule.summary.actualPayoffDate)}</span>
                     </p>
                   )}
                 </CardContent>
@@ -957,7 +927,7 @@ export default function LiabilityDetailPage() {
           <DialogTitle>Update Balance from Transactions</DialogTitle>
         </DialogHeader>
         <DialogContent>
-          {calculatedBalance && !("error" in calculatedBalance) && (
+          {calculatedBalance && !calculatedBalanceHasError && (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
                 This will update the current balance based on your imported transaction history.
@@ -988,7 +958,7 @@ export default function LiabilityDetailPage() {
                 <p>
                   Based on {calculatedBalance.paymentCount} payment{calculatedBalance.paymentCount !== 1 ? "s" : ""}
                   {calculatedBalance.dateRange && (
-                    <> ({formatDateFull(calculatedBalance.dateRange.start)} – {formatDateFull(calculatedBalance.dateRange.end)})</>
+                    <> ({formatDateFull(calculatedBalance.dateRange.start)} - {formatDateFull(calculatedBalance.dateRange.end)})</>
                   )}
                 </p>
               </div>

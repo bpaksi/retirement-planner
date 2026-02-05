@@ -1,9 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
-import { Id } from "../../../convex/_generated/dataModel";
+import { useState, useEffect } from "react";
+import { fetchAnnualBudgets } from "@/app/actions/data";
+import type { AnnualBudget } from "@/db/queries/annualBudgets";
+import {
+  createAnnualBudget,
+  updateAnnualBudget,
+  deleteAnnualBudget,
+} from "@/app/actions/annualBudgets";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -16,16 +20,6 @@ import {
 } from "@/components/ui/Dialog";
 import { formatCurrency } from "@/lib/utils";
 import { Plus, Pencil, Trash2, Wallet, Loader2 } from "lucide-react";
-
-interface AnnualBudget {
-  _id: Id<"annualBudgets">;
-  name: string;
-  annualAmount: number;
-  startYear?: number;
-  endYear?: number;
-  notes?: string;
-  createdAt: number;
-}
 
 interface FormData {
   name: string;
@@ -56,16 +50,25 @@ const SUGGESTIONS = [
 
 export function AnnualBudgetsList() {
   const [showDialog, setShowDialog] = useState(false);
-  const [editingId, setEditingId] = useState<Id<"annualBudgets"> | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<FormData>(initialFormData);
   const [isSaving, setIsSaving] = useState(false);
+  const [budgets, setBudgets] = useState<AnnualBudget[] | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const budgets = useQuery(api.annualBudgets.queries.list);
-  const createBudget = useMutation(api.annualBudgets.mutations.create);
-  const updateBudget = useMutation(api.annualBudgets.mutations.update);
-  const removeBudget = useMutation(api.annualBudgets.mutations.remove);
+  const loadData = async () => {
+    setIsLoading(true);
+    try {
+      const data = await fetchAnnualBudgets();
+      setBudgets(data);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-  const isLoading = budgets === undefined;
+  useEffect(() => {
+    loadData();
+  }, []);
 
   const openCreateDialog = (suggestion?: { name: string; amount: number }) => {
     setEditingId(null);
@@ -82,7 +85,7 @@ export function AnnualBudgetsList() {
   };
 
   const openEditDialog = (budget: AnnualBudget) => {
-    setEditingId(budget._id);
+    setEditingId(budget.id);
     setFormData({
       name: budget.name,
       annualAmount: budget.annualAmount.toString(),
@@ -107,20 +110,22 @@ export function AnnualBudgetsList() {
       };
 
       if (editingId) {
-        await updateBudget({ id: editingId, ...data });
+        await updateAnnualBudget({ id: editingId, ...data });
       } else {
-        await createBudget(data);
+        await createAnnualBudget(data);
       }
 
       setShowDialog(false);
+      await loadData();
     } finally {
       setIsSaving(false);
     }
   };
 
-  const handleDelete = async (id: Id<"annualBudgets">) => {
+  const handleDelete = async (id: string) => {
     if (confirm("Are you sure you want to delete this budget item?")) {
-      await removeBudget({ id });
+      await deleteAnnualBudget(id);
+      await loadData();
     }
   };
 
@@ -181,7 +186,7 @@ export function AnnualBudgetsList() {
               <div className="space-y-3">
                 {budgets?.map((budget) => (
                   <div
-                    key={budget._id}
+                    key={budget.id}
                     className="flex items-center justify-between p-3 rounded-lg bg-muted/50"
                   >
                     <div>
@@ -212,7 +217,7 @@ export function AnnualBudgetsList() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => handleDelete(budget._id)}
+                          onClick={() => handleDelete(budget.id)}
                         >
                           <Trash2 className="w-4 h-4 text-destructive" />
                         </Button>

@@ -5,7 +5,7 @@ import { formatCurrency } from "@/lib/utils";
 
 interface SpendingData {
   category: {
-    _id: string;
+    id: string;
     name: string;
     color: string;
     isEssential: boolean;
@@ -85,7 +85,7 @@ export function SpendingPieChart({
     value: item.total,
     color: item.category?.color || "#607D8B",
     isEssential: item.category?.isEssential || false,
-    categoryId: item.category?._id || null,
+    categoryId: item.category?.id || null,
   }));
 
   const handleClick = (data: ChartDataItem) => {

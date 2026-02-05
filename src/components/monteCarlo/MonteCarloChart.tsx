@@ -13,17 +13,7 @@ import {
   Area,
 } from "recharts";
 import { formatCurrency } from "@/lib/utils";
-
-interface YearResult {
-  year: number;
-  startBalance: number;
-  return: number;
-  spending: number;
-  ssIncome: number;
-  workIncome: number;
-  endBalance: number;
-  guardrailTriggered: "ceiling" | "floor" | null;
-}
+import type { YearResult } from "@/lib/calculations/monteCarlo";
 
 interface MonteCarloChartProps {
   samplePaths: YearResult[][];

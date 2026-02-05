@@ -1,8 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -19,6 +17,32 @@ import {
   Loader2,
 } from "lucide-react";
 
+// Import server actions for data fetching
+import { fetchGuardrailsConfig } from "@/app/actions/data";
+
+// Import actions
+import { upsertGuardrailsConfig, toggleGuardrails } from "@/app/actions/guardrails";
+
+// Default guardrails values
+const GUARDRAILS_DEFAULTS = {
+  upperThresholdPercent: 0.2,
+  lowerThresholdPercent: 0.2,
+  spendingAdjustmentPercent: 0.1,
+  strategyType: "percentage" as const,
+};
+
+// Type for guardrails config with defaults
+interface GuardrailsConfigWithDefaults {
+  isEnabled: boolean;
+  upperThresholdPercent: number;
+  lowerThresholdPercent: number;
+  spendingAdjustmentPercent: number;
+  strategyType: "percentage" | "fixed";
+  spendingFloor?: number | null;
+  spendingCeiling?: number | null;
+  fixedAdjustmentAmount?: number | null;
+}
+
 interface GuardrailsConfigProps {
   baseSpending: number;
 }
@@ -26,6 +50,8 @@ interface GuardrailsConfigProps {
 export function GuardrailsConfig({ baseSpending }: GuardrailsConfigProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [config, setConfig] = useState<GuardrailsConfigWithDefaults | null>(null);
 
   // Form state
   const [isEnabled, setIsEnabled] = useState(false);
@@ -37,9 +63,46 @@ export function GuardrailsConfig({ baseSpending }: GuardrailsConfigProps) {
   const [spendingFloor, setSpendingFloor] = useState("");
   const [spendingCeiling, setSpendingCeiling] = useState("");
 
-  const config = useQuery(api.guardrails.queries.getWithDefaults);
-  const upsertConfig = useMutation(api.guardrails.mutations.upsert);
-  const toggleEnabled = useMutation(api.guardrails.mutations.toggleEnabled);
+  // Load config on mount
+  const loadConfig = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const dbConfig = await fetchGuardrailsConfig();
+
+      // Apply defaults if no config exists
+      const configWithDefaults: GuardrailsConfigWithDefaults = dbConfig
+        ? {
+            isEnabled: dbConfig.isEnabled,
+            upperThresholdPercent: dbConfig.upperThresholdPercent,
+            lowerThresholdPercent: dbConfig.lowerThresholdPercent,
+            spendingAdjustmentPercent: dbConfig.spendingAdjustmentPercent,
+            strategyType: dbConfig.strategyType,
+            spendingFloor: dbConfig.spendingFloor,
+            spendingCeiling: dbConfig.spendingCeiling,
+            fixedAdjustmentAmount: dbConfig.fixedAdjustmentAmount,
+          }
+        : {
+            isEnabled: false,
+            upperThresholdPercent: GUARDRAILS_DEFAULTS.upperThresholdPercent,
+            lowerThresholdPercent: GUARDRAILS_DEFAULTS.lowerThresholdPercent,
+            spendingAdjustmentPercent: GUARDRAILS_DEFAULTS.spendingAdjustmentPercent,
+            strategyType: GUARDRAILS_DEFAULTS.strategyType,
+            spendingFloor: undefined,
+            spendingCeiling: undefined,
+            fixedAdjustmentAmount: undefined,
+          };
+
+      setConfig(configWithDefaults);
+    } catch (error) {
+      console.error("Failed to load guardrails config:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadConfig();
+  }, [loadConfig]);
 
   // Initialize form from config
   useEffect(() => {
@@ -56,14 +119,16 @@ export function GuardrailsConfig({ baseSpending }: GuardrailsConfigProps) {
   }, [config]);
 
   const handleToggleEnabled = async () => {
-    await toggleEnabled({ isEnabled: !isEnabled });
-    setIsEnabled(!isEnabled);
+    const newEnabled = !isEnabled;
+    await toggleGuardrails(newEnabled);
+    setIsEnabled(newEnabled);
+    await loadConfig();
   };
 
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      await upsertConfig({
+      await upsertGuardrailsConfig({
         isEnabled,
         upperThresholdPercent: parseFloat(upperThreshold) / 100,
         lowerThresholdPercent: parseFloat(lowerThreshold) / 100,
@@ -73,12 +138,13 @@ export function GuardrailsConfig({ baseSpending }: GuardrailsConfigProps) {
         spendingFloor: spendingFloor ? parseFloat(spendingFloor) : undefined,
         spendingCeiling: spendingCeiling ? parseFloat(spendingCeiling) : undefined,
       });
+      await loadConfig();
     } finally {
       setIsSaving(false);
     }
   };
 
-  if (config === undefined) {
+  if (isLoading) {
     return (
       <Card>
         <CardContent className="pt-6">

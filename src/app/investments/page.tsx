@@ -1,9 +1,12 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
-import { Id } from "../../../convex/_generated/dataModel";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import {
+  fetchHoldingsWithAccounts,
+  fetchAccounts,
+  fetchAllocationTargets,
+} from "@/app/actions/investments";
+import { upsertAllocationTarget } from "@/app/actions/allocationTargets";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -27,66 +30,244 @@ import {
 } from "lucide-react";
 import { type AssetClass } from "@/lib/constants/investments";
 
+// Types for the data structures
+type HoldingWithAccount = Awaited<ReturnType<typeof fetchHoldingsWithAccounts>>[number];
+type Account = Awaited<ReturnType<typeof fetchAccounts>>[number];
+type AllocationTarget = Awaited<ReturnType<typeof fetchAllocationTargets>>[number];
+
+// Holding with computed values for display
+interface HoldingWithDetails {
+  id: string;
+  _id: string; // For compatibility with HoldingsTab which expects _id
+  accountId: string;
+  symbol: string;
+  name: string;
+  shares: number;
+  costBasis?: number | null;
+  assetClass: AssetClass;
+  lastPrice?: number | null;
+  lastPriceUpdated?: number | null;
+  account: {
+    _id: string;
+    name: string;
+    institution: string;
+  } | null;
+  currentValue: number;
+  gainLoss: number;
+  gainLossPercent: number;
+}
+
+// Allocation data for display
+interface AllocationData {
+  assetClass: AssetClass;
+  value: number;
+  percent: number;
+  holdings: number;
+}
+
+// Rebalancing analysis
+interface RebalanceAnalysis {
+  assetClass: AssetClass;
+  currentValue: number;
+  currentPercent: number;
+  targetPercent: number;
+  threshold: number;
+  drift: number;
+  needsRebalance: boolean;
+}
+
+// Target data for display
+interface TargetData {
+  assetClass: string;
+  targetPercent: number;
+  rebalanceThreshold: number;
+}
+
 export default function InvestmentsPage() {
-  const [selectedAccountId, setSelectedAccountId] = useState<
-    Id<"accounts"> | "all"
-  >("all");
+  const [selectedAccountId, setSelectedAccountId] = useState<string | "all">("all");
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [showTargetsDialog, setShowTargetsDialog] = useState(false);
 
-  // Queries
-  const accountsWithHoldings = useQuery(
-    api.allocations.queries.getAccountsWithHoldings
-  );
-  const portfolioSummary = useQuery(api.holdings.queries.getPortfolioSummary, {
-    accountId:
-      selectedAccountId === "all" ? undefined : selectedAccountId,
-  });
-  const allocation = useQuery(api.holdings.queries.getAllocation, {
-    accountId:
-      selectedAccountId === "all" ? undefined : selectedAccountId,
-  });
-  const rebalancing = useQuery(api.holdings.queries.getRebalancingAnalysis, {
-    accountId:
-      selectedAccountId === "all" ? undefined : selectedAccountId,
-  });
-  const targets = useQuery(api.allocations.queries.getTargets, {
-    accountId:
-      selectedAccountId === "all" ? undefined : selectedAccountId,
-  });
+  // Data state
+  const [holdings, setHoldings] = useState<HoldingWithAccount[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [allocationTargets, setAllocationTargets] = useState<AllocationTarget[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Mutations
-  const setAllTargets = useMutation(api.allocations.mutations.setAllTargets);
+  // Load data function
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const [holdingsData, accountsData, targets] = await Promise.all([
+        fetchHoldingsWithAccounts(),
+        fetchAccounts(true), // active only
+        fetchAllocationTargets(selectedAccountId === "all" ? undefined : selectedAccountId),
+      ]);
+      setHoldings(holdingsData);
+      setAccounts(accountsData);
+      setAllocationTargets(targets);
+    } catch (error) {
+      console.error("Failed to load investments data:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [selectedAccountId]);
 
-  // Computed values
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // Filter holdings by selected account
+  const filteredHoldings = useMemo(() => {
+    if (selectedAccountId === "all") {
+      return holdings;
+    }
+    return holdings.filter((h) => h.accountId === selectedAccountId);
+  }, [holdings, selectedAccountId]);
+
+  // Get accounts that have holdings (for the filter dropdown)
+  const accountsWithHoldings = useMemo(() => {
+    const accountIdsWithHoldings = new Set(holdings.map((h) => h.accountId));
+    return accounts.filter((a) => accountIdsWithHoldings.has(a.id));
+  }, [accounts, holdings]);
+
+  // Compute portfolio summary with details
+  const portfolioSummary: HoldingWithDetails[] = useMemo(() => {
+    return filteredHoldings.map((h) => {
+      const currentValue = h.shares * (h.lastPrice ?? 0);
+      const gainLoss = h.costBasis ? currentValue - h.costBasis : 0;
+      const gainLossPercent = h.costBasis && h.costBasis > 0 ? gainLoss / h.costBasis : 0;
+
+      return {
+        id: h.id,
+        _id: h.id, // For compatibility with HoldingsTab
+        accountId: h.accountId,
+        symbol: h.symbol,
+        name: h.name,
+        shares: h.shares,
+        costBasis: h.costBasis,
+        assetClass: h.assetClass as AssetClass,
+        lastPrice: h.lastPrice,
+        lastPriceUpdated: h.lastPriceUpdated,
+        account: h.account
+          ? {
+              _id: h.account.id,
+              name: h.account.name,
+              institution: h.account.institution,
+            }
+          : null,
+        currentValue,
+        gainLoss,
+        gainLossPercent,
+      };
+    });
+  }, [filteredHoldings]);
+
+  // Compute totals
   const totalValue = useMemo(() => {
-    if (!portfolioSummary) return 0;
     return portfolioSummary.reduce((sum, h) => sum + h.currentValue, 0);
   }, [portfolioSummary]);
 
   const totalGainLoss = useMemo(() => {
-    if (!portfolioSummary) return 0;
     return portfolioSummary.reduce((sum, h) => sum + h.gainLoss, 0);
   }, [portfolioSummary]);
 
   const totalCostBasis = useMemo(() => {
-    if (!portfolioSummary) return 0;
     return portfolioSummary.reduce((sum, h) => sum + (h.costBasis ?? 0), 0);
   }, [portfolioSummary]);
 
   const totalGainLossPercent = totalCostBasis > 0 ? totalGainLoss / totalCostBasis : 0;
+  const holdingsCount = portfolioSummary.length;
 
-  const holdingsCount = portfolioSummary?.length ?? 0;
+  // Compute allocation by asset class
+  const allocation: AllocationData[] = useMemo(() => {
+    const byClass: Record<string, { value: number; count: number }> = {};
 
-  const isLoading =
-    portfolioSummary === undefined ||
-    allocation === undefined ||
-    rebalancing === undefined;
+    for (const h of portfolioSummary) {
+      if (!byClass[h.assetClass]) {
+        byClass[h.assetClass] = { value: 0, count: 0 };
+      }
+      byClass[h.assetClass].value += h.currentValue;
+      byClass[h.assetClass].count += 1;
+    }
 
-  const selectedAccount = accountsWithHoldings?.find(
-    (a) => a._id === selectedAccountId
-  );
+    return Object.entries(byClass).map(([assetClass, data]) => ({
+      assetClass: assetClass as AssetClass,
+      value: data.value,
+      percent: totalValue > 0 ? data.value / totalValue : 0,
+      holdings: data.count,
+    }));
+  }, [portfolioSummary, totalValue]);
 
+  // Convert allocation targets to display format
+  const targets: TargetData[] = useMemo(() => {
+    return allocationTargets.map((t) => ({
+      assetClass: t.assetClass,
+      targetPercent: t.targetPercent,
+      rebalanceThreshold: t.rebalanceThreshold,
+    }));
+  }, [allocationTargets]);
+
+  // Create a map for quick target lookup
+  const targetMap = useMemo(() => {
+    return new Map(allocationTargets.map((t) => [t.assetClass, t]));
+  }, [allocationTargets]);
+
+  // Compute rebalancing analysis
+  const rebalancing = useMemo(() => {
+    const hasTargets = allocationTargets.length > 0;
+
+    if (!hasTargets) {
+      return {
+        analysis: [] as RebalanceAnalysis[],
+        totalValue,
+        needsRebalanceCount: 0,
+        hasTargets: false,
+      };
+    }
+
+    // Get all asset classes that either have holdings or targets
+    const allAssetClasses = new Set([
+      ...allocation.map((a) => a.assetClass),
+      ...allocationTargets.map((t) => t.assetClass as AssetClass),
+    ]);
+
+    const analysis: RebalanceAnalysis[] = Array.from(allAssetClasses).map((assetClass) => {
+      const alloc = allocation.find((a) => a.assetClass === assetClass);
+      const target = targetMap.get(assetClass);
+
+      const currentValue = alloc?.value ?? 0;
+      const currentPercent = totalValue > 0 ? currentValue / totalValue : 0;
+      const targetPercent = target?.targetPercent ?? 0;
+      const threshold = target?.rebalanceThreshold ?? 0.05;
+      const drift = currentPercent - targetPercent;
+      const needsRebalance = Math.abs(drift) > threshold;
+
+      return {
+        assetClass,
+        currentValue,
+        currentPercent,
+        targetPercent,
+        threshold,
+        drift,
+        needsRebalance,
+      };
+    });
+
+    const needsRebalanceCount = analysis.filter((a) => a.needsRebalance).length;
+
+    return {
+      analysis,
+      totalValue,
+      needsRebalanceCount,
+      hasTargets: true,
+    };
+  }, [allocation, allocationTargets, targetMap, totalValue]);
+
+  // Get selected account info
+  const selectedAccount = accountsWithHoldings.find((a) => a.id === selectedAccountId);
+
+  // Handle saving allocation targets
   const handleSaveTargets = async (
     newTargets: Array<{
       assetClass: AssetClass;
@@ -94,11 +275,16 @@ export default function InvestmentsPage() {
       rebalanceThreshold: number;
     }>
   ) => {
-    await setAllTargets({
-      accountId:
-        selectedAccountId === "all" ? undefined : selectedAccountId,
-      targets: newTargets,
-    });
+    for (const target of newTargets) {
+      await upsertAllocationTarget({
+        accountId: selectedAccountId === "all" ? undefined : selectedAccountId,
+        assetClass: target.assetClass,
+        targetPercent: target.targetPercent,
+        rebalanceThreshold: target.rebalanceThreshold,
+      });
+    }
+    // Reload data after saving
+    loadData();
   };
 
   return (
@@ -118,16 +304,12 @@ export default function InvestmentsPage() {
               {/* Account Filter */}
               <Select
                 value={selectedAccountId}
-                onChange={(e) =>
-                  setSelectedAccountId(
-                    e.target.value as Id<"accounts"> | "all"
-                  )
-                }
+                onChange={(e) => setSelectedAccountId(e.target.value as string | "all")}
                 className="w-[200px]"
               >
                 <option value="all">All Accounts</option>
-                {accountsWithHoldings?.map((account) => (
-                  <option key={account._id} value={account._id}>
+                {accountsWithHoldings.map((account) => (
+                  <option key={account.id} value={account.id}>
                     {account.name}
                   </option>
                 ))}
@@ -167,9 +349,7 @@ export default function InvestmentsPage() {
                   <div
                     className={cn(
                       "w-10 h-10 rounded-lg flex items-center justify-center",
-                      totalGainLoss >= 0
-                        ? "bg-green-500/10"
-                        : "bg-red-500/10"
+                      totalGainLoss >= 0 ? "bg-green-500/10" : "bg-red-500/10"
                     )}
                   >
                     {totalGainLoss >= 0 ? (
@@ -189,9 +369,7 @@ export default function InvestmentsPage() {
                         <p
                           className={cn(
                             "text-2xl font-semibold",
-                            totalGainLoss >= 0
-                              ? "text-green-500"
-                              : "text-red-500"
+                            totalGainLoss >= 0 ? "text-green-500" : "text-red-500"
                           )}
                         >
                           {totalGainLoss >= 0 ? "+" : ""}
@@ -200,9 +378,7 @@ export default function InvestmentsPage() {
                         <span
                           className={cn(
                             "text-sm",
-                            totalGainLoss >= 0
-                              ? "text-green-500"
-                              : "text-red-500"
+                            totalGainLoss >= 0 ? "text-green-500" : "text-red-500"
                           )}
                         >
                           ({totalGainLossPercent >= 0 ? "+" : ""}
@@ -260,7 +436,7 @@ export default function InvestmentsPage() {
                     </div>
                   ) : (
                     <HoldingsTab
-                      holdings={portfolioSummary ?? []}
+                      holdings={portfolioSummary as unknown as Parameters<typeof HoldingsTab>[0]['holdings']}
                       showAccount={selectedAccountId === "all"}
                     />
                   )}
@@ -273,9 +449,9 @@ export default function InvestmentsPage() {
                     </div>
                   ) : (
                     <AllocationTab
-                      allocation={allocation?.allocation ?? []}
-                      totalValue={allocation?.totalValue ?? 0}
-                      targets={targets?.targets ?? []}
+                      allocation={allocation}
+                      totalValue={totalValue}
+                      targets={targets}
                       onEditTargets={() => setShowTargetsDialog(true)}
                     />
                   )}
@@ -288,10 +464,10 @@ export default function InvestmentsPage() {
                     </div>
                   ) : (
                     <RebalancingTab
-                      analysis={rebalancing?.analysis ?? []}
-                      totalValue={rebalancing?.totalValue ?? 0}
-                      needsRebalanceCount={rebalancing?.needsRebalanceCount ?? 0}
-                      hasTargets={rebalancing?.hasTargets ?? false}
+                      analysis={rebalancing.analysis}
+                      totalValue={rebalancing.totalValue}
+                      needsRebalanceCount={rebalancing.needsRebalanceCount}
+                      hasTargets={rebalancing.hasTargets}
                       onEditTargets={() => setShowTargetsDialog(true)}
                     />
                   )}
@@ -309,7 +485,10 @@ export default function InvestmentsPage() {
         className="max-w-3xl"
       >
         <ImportWizard
-          onComplete={() => setShowImportDialog(false)}
+          onComplete={() => {
+            setShowImportDialog(false);
+            loadData(); // Reload data after import
+          }}
           defaultAccountId={
             selectedAccountId !== "all" ? selectedAccountId : undefined
           }
@@ -321,7 +500,7 @@ export default function InvestmentsPage() {
         open={showTargetsDialog}
         onClose={() => setShowTargetsDialog(false)}
         onSave={handleSaveTargets}
-        existingTargets={targets?.targets ?? []}
+        existingTargets={targets}
         isAccountSpecific={selectedAccountId !== "all"}
         accountName={selectedAccount?.name}
       />

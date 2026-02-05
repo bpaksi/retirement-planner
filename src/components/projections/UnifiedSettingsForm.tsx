@@ -1,8 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -25,7 +23,33 @@ import {
   Trash2,
   AlertTriangle,
 } from "lucide-react";
-import { Id } from "../../../convex/_generated/dataModel";
+
+// Import server actions for data fetching
+import {
+  fetchRetirementProfile,
+  fetchGuardrailsConfig,
+  fetchAssumptionsWithDefaults,
+  fetchAnnualBudgets,
+  fetchSpendingSummary,
+} from "@/app/actions/data";
+
+// Import actions
+import { upsertRetirementProfile } from "@/app/actions/retirementProfile";
+import { upsertGuardrailsConfig } from "@/app/actions/guardrails";
+import { upsertMonteCarloAssumptions } from "@/app/actions/monteCarlo";
+import {
+  createAnnualBudget,
+  updateAnnualBudget,
+  deleteAnnualBudget,
+} from "@/app/actions/annualBudgets";
+
+// Default guardrails values
+const GUARDRAILS_DEFAULTS = {
+  upperThresholdPercent: 0.2,
+  lowerThresholdPercent: 0.2,
+  spendingAdjustmentPercent: 0.1,
+  strategyType: "percentage" as const,
+};
 
 interface SectionProps {
   title: string;
@@ -59,6 +83,25 @@ function Section({ title, icon, isExpanded, onToggle, children, badge }: Section
   );
 }
 
+// Types for loaded data
+interface LoadedData {
+  profile: Awaited<ReturnType<typeof fetchRetirementProfile>>;
+  guardrailsConfig: Awaited<ReturnType<typeof fetchGuardrailsConfig>>;
+  monteCarloAssumptions: Awaited<ReturnType<typeof fetchAssumptionsWithDefaults>>;
+  annualBudgets: Awaited<ReturnType<typeof fetchAnnualBudgets>>;
+  spendingBreakdown: {
+    baseLivingExpense: number;
+    monthlyBaseLivingExpense: number;
+    isBaseLivingExpenseAutoCalculated: boolean;
+    suggestedBaseLivingExpense: number;
+    totalGoalsAmount: number;
+    essentialFloor: number;
+    discretionaryAmount: number;
+    monthsOfTransactionData: number;
+    hasEnoughTransactionData: boolean;
+  };
+}
+
 interface UnifiedSettingsFormProps {
   onSettingsChanged?: () => void;
 }
@@ -69,12 +112,16 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
     new Set(["profile", "spending"])
   );
 
+  // Loading state
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadedData, setLoadedData] = useState<LoadedData | null>(null);
+
   // Form state - Profile
   const [retirementDate, setRetirementDate] = useState("");
   const [currentAge, setCurrentAge] = useState("");
   const [annualSpending, setAnnualSpending] = useState("");
 
-  // Form state - Spending Breakdown (NEW)
+  // Form state - Spending Breakdown
   const [monthlyBaseLivingExpense, setMonthlyBaseLivingExpense] = useState("");
   const [useAutoBaseLivingExpense, setUseAutoBaseLivingExpense] = useState(false);
   // New goal form
@@ -110,25 +157,64 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
   const [isSaving, setIsSaving] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
-  // Queries
-  const projectionInputs = useQuery(api.projections.queries.getProjectionInputs);
-  const guardrailsConfig = useQuery(api.guardrails.queries.getWithDefaults);
-  const monteCarloAssumptions = useQuery(api.monteCarlo.queries.getAssumptionsWithDefaults);
-  const spendingBreakdown = useQuery(api.projections.queries.getSpendingBreakdown);
-  const annualBudgets = useQuery(api.annualBudgets.queries.list);
+  // Load data on mount
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const [profile, guardrailsConfig, monteCarloAssumptions, annualBudgets, spendingSummary] =
+        await Promise.all([
+          fetchRetirementProfile(),
+          fetchGuardrailsConfig(),
+          fetchAssumptionsWithDefaults(),
+          fetchAnnualBudgets(),
+          fetchSpendingSummary({ monthsBack: 12 }),
+        ]);
 
-  // Mutations
-  const upsertProfile = useMutation(api.retirementProfile.mutations.upsert);
-  const upsertGuardrails = useMutation(api.guardrails.mutations.upsert);
-  const upsertAssumptions = useMutation(api.monteCarlo.mutations.upsertAssumptions);
-  const createBudget = useMutation(api.annualBudgets.mutations.create);
-  const updateBudget = useMutation(api.annualBudgets.mutations.update);
-  const deleteBudget = useMutation(api.annualBudgets.mutations.remove);
+      // Calculate spending breakdown from annual budgets and profile
+      const baseLivingExpense = profile?.monthlyBaseLivingExpense
+        ? profile.monthlyBaseLivingExpense * 12
+        : profile?.annualSpending ?? 0;
+      const monthlyBase = profile?.monthlyBaseLivingExpense ?? baseLivingExpense / 12;
 
-  // Initialize form state from queries
+      const totalGoalsAmount = annualBudgets.reduce((sum, b) => sum + b.annualAmount, 0);
+      const essentialGoalsAmount = annualBudgets
+        .filter((b) => b.isEssential)
+        .reduce((sum, b) => sum + b.annualAmount, 0);
+
+      const spendingBreakdown = {
+        baseLivingExpense,
+        monthlyBaseLivingExpense: monthlyBase,
+        isBaseLivingExpenseAutoCalculated: profile?.isBaseLivingExpenseAutoCalculated ?? false,
+        suggestedBaseLivingExpense: spendingSummary.monthlyMedian * 12,
+        totalGoalsAmount,
+        essentialFloor: baseLivingExpense + essentialGoalsAmount,
+        discretionaryAmount: totalGoalsAmount - essentialGoalsAmount,
+        monthsOfTransactionData: spendingSummary.dataQuality.monthsWithData,
+        hasEnoughTransactionData: spendingSummary.dataQuality.monthsWithData >= 3,
+      };
+
+      setLoadedData({
+        profile,
+        guardrailsConfig,
+        monteCarloAssumptions,
+        annualBudgets,
+        spendingBreakdown,
+      });
+    } catch (error) {
+      console.error("Failed to load settings data:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    if (projectionInputs?.profile) {
-      const profile = projectionInputs.profile;
+    loadData();
+  }, [loadData]);
+
+  // Initialize form state from loaded data
+  useEffect(() => {
+    if (loadedData?.profile) {
+      const profile = loadedData.profile;
       const date = new Date(profile.retirementDate);
       setRetirementDate(
         `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
@@ -136,42 +222,51 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
       setCurrentAge(profile.currentAge.toString());
       setAnnualSpending(profile.annualSpending.toString());
     }
-  }, [projectionInputs?.profile]);
+  }, [loadedData?.profile]);
 
   useEffect(() => {
-    if (guardrailsConfig) {
-      setGuardrailsEnabled(guardrailsConfig.isEnabled);
-      setUpperThreshold((guardrailsConfig.upperThresholdPercent * 100).toString());
-      setLowerThreshold((guardrailsConfig.lowerThresholdPercent * 100).toString());
-      setAdjustmentPercent((guardrailsConfig.spendingAdjustmentPercent * 100).toString());
-      setStrategyType(guardrailsConfig.strategyType);
-      setFixedAmount(guardrailsConfig.fixedAdjustmentAmount?.toString() ?? "");
-      setSpendingFloor(guardrailsConfig.spendingFloor?.toString() ?? "");
-      setSpendingCeiling(guardrailsConfig.spendingCeiling?.toString() ?? "");
+    if (loadedData?.guardrailsConfig) {
+      const config = loadedData.guardrailsConfig;
+      setGuardrailsEnabled(config.isEnabled);
+      setUpperThreshold((config.upperThresholdPercent * 100).toString());
+      setLowerThreshold((config.lowerThresholdPercent * 100).toString());
+      setAdjustmentPercent((config.spendingAdjustmentPercent * 100).toString());
+      setStrategyType(config.strategyType);
+      setFixedAmount(config.fixedAdjustmentAmount?.toString() ?? "");
+      setSpendingFloor(config.spendingFloor?.toString() ?? "");
+      setSpendingCeiling(config.spendingCeiling?.toString() ?? "");
+    } else {
+      // Use defaults
+      setGuardrailsEnabled(false);
+      setUpperThreshold((GUARDRAILS_DEFAULTS.upperThresholdPercent * 100).toString());
+      setLowerThreshold((GUARDRAILS_DEFAULTS.lowerThresholdPercent * 100).toString());
+      setAdjustmentPercent((GUARDRAILS_DEFAULTS.spendingAdjustmentPercent * 100).toString());
+      setStrategyType(GUARDRAILS_DEFAULTS.strategyType);
     }
-  }, [guardrailsConfig]);
+  }, [loadedData?.guardrailsConfig]);
 
   useEffect(() => {
-    if (monteCarloAssumptions) {
-      setRealReturn((monteCarloAssumptions.realReturn * 100).toString());
-      setVolatility((monteCarloAssumptions.volatility * 100).toString());
-      setPlanToAge(monteCarloAssumptions.planToAge.toString());
-      setTargetSuccessRate((monteCarloAssumptions.targetSuccessRate * 100).toString());
-      setIterations((monteCarloAssumptions.iterations ?? 1000).toString());
+    if (loadedData?.monteCarloAssumptions) {
+      const assumptions = loadedData.monteCarloAssumptions;
+      setRealReturn((assumptions.realReturn * 100).toString());
+      setVolatility((assumptions.volatility * 100).toString());
+      setPlanToAge(assumptions.planToAge.toString());
+      setTargetSuccessRate((assumptions.targetSuccessRate * 100).toString());
+      setIterations((assumptions.iterations ?? 1000).toString());
     }
     // Initialize standard projection returns from defaults
     setExpectedReturn((PROJECTION_DEFAULTS.expectedReturn * 100).toString());
     setOptimisticReturn((PROJECTION_DEFAULTS.optimisticReturn * 100).toString());
     setPessimisticReturn((PROJECTION_DEFAULTS.pessimisticReturn * 100).toString());
-  }, [monteCarloAssumptions]);
+  }, [loadedData?.monteCarloAssumptions]);
 
   // Initialize base living expense from spending breakdown
   useEffect(() => {
-    if (spendingBreakdown) {
-      setMonthlyBaseLivingExpense(spendingBreakdown.monthlyBaseLivingExpense.toString());
-      setUseAutoBaseLivingExpense(spendingBreakdown.isBaseLivingExpenseAutoCalculated);
+    if (loadedData?.spendingBreakdown) {
+      setMonthlyBaseLivingExpense(loadedData.spendingBreakdown.monthlyBaseLivingExpense.toString());
+      setUseAutoBaseLivingExpense(loadedData.spendingBreakdown.isBaseLivingExpenseAutoCalculated);
     }
-  }, [spendingBreakdown]);
+  }, [loadedData?.spendingBreakdown]);
 
   const toggleSection = (section: string) => {
     setExpandedSections((prev) => {
@@ -189,7 +284,7 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
   const handleAddGoal = async () => {
     if (!newGoalName || !newGoalAmount) return;
 
-    await createBudget({
+    await createAnnualBudget({
       name: newGoalName,
       annualAmount: parseFloat(newGoalAmount),
       isEssential: newGoalIsEssential,
@@ -203,18 +298,23 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
     setNewGoalIsEssential(false);
     setNewGoalStartYear("");
     setNewGoalEndYear("");
+
+    // Reload data
+    await loadData();
     onSettingsChanged?.();
   };
 
   // Handler for toggling goal essential status
-  const handleToggleEssential = async (id: Id<"annualBudgets">, isEssential: boolean) => {
-    await updateBudget({ id, isEssential: !isEssential });
+  const handleToggleEssential = async (id: string, isEssential: boolean) => {
+    await updateAnnualBudget({ id, isEssential: !isEssential });
+    await loadData();
     onSettingsChanged?.();
   };
 
   // Handler for deleting a goal
-  const handleDeleteGoal = async (id: Id<"annualBudgets">) => {
-    await deleteBudget({ id });
+  const handleDeleteGoal = async (id: string) => {
+    await deleteAnnualBudget(id);
+    await loadData();
     onSettingsChanged?.();
   };
 
@@ -227,13 +327,16 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
         const retireDate = new Date(year, month - 1, 1).getTime();
 
         // Calculate annual spending from base + goals
+        const suggestedMonthlyBase = loadedData?.spendingBreakdown.suggestedBaseLivingExpense
+          ? loadedData.spendingBreakdown.suggestedBaseLivingExpense / 12
+          : 0;
         const monthlyBase = useAutoBaseLivingExpense
-          ? (spendingBreakdown?.suggestedBaseLivingExpense ?? 0) / 12
+          ? suggestedMonthlyBase
           : parseFloat(monthlyBaseLivingExpense) || 0;
-        const goalsTotal = spendingBreakdown?.totalGoalsAmount ?? 0;
+        const goalsTotal = loadedData?.spendingBreakdown.totalGoalsAmount ?? 0;
         const totalSpending = monthlyBase * 12 + goalsTotal;
 
-        await upsertProfile({
+        await upsertRetirementProfile({
           retirementDate: retireDate,
           currentAge: parseInt(currentAge, 10),
           annualSpending: totalSpending,
@@ -244,7 +347,7 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
       }
 
       // Save guardrails
-      await upsertGuardrails({
+      await upsertGuardrailsConfig({
         isEnabled: guardrailsEnabled,
         upperThresholdPercent: parseFloat(upperThreshold) / 100,
         lowerThresholdPercent: parseFloat(lowerThreshold) / 100,
@@ -256,7 +359,7 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
       });
 
       // Save Monte Carlo assumptions
-      await upsertAssumptions({
+      await upsertMonteCarloAssumptions({
         realReturn: parseFloat(realReturn) / 100,
         volatility: parseFloat(volatility) / 100,
         planToAge: parseInt(planToAge, 10),
@@ -265,6 +368,7 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
       });
 
       setHasUnsavedChanges(false);
+      await loadData();
       onSettingsChanged?.();
     } finally {
       setIsSaving(false);
@@ -299,13 +403,7 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
   const markChanged = () => setHasUnsavedChanges(true);
 
   // Loading state
-  if (
-    projectionInputs === undefined ||
-    guardrailsConfig === undefined ||
-    monteCarloAssumptions === undefined ||
-    spendingBreakdown === undefined ||
-    annualBudgets === undefined
-  ) {
+  if (isLoading || !loadedData) {
     return (
       <Card>
         <CardContent className="pt-6">
@@ -318,6 +416,8 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
   }
 
   const currentSpending = parseFloat(annualSpending) || 0;
+  const spendingBreakdown = loadedData.spendingBreakdown;
+  const annualBudgets = loadedData.annualBudgets;
 
   // Spending breakdown calculations
   const suggestedMonthlyBase = spendingBreakdown.suggestedBaseLivingExpense / 12;
@@ -336,7 +436,7 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
         isExpanded={expandedSections.has("profile")}
         onToggle={() => toggleSection("profile")}
         badge={
-          projectionInputs.profile ? (
+          loadedData.profile ? (
             <span className="text-xs bg-green-500/10 text-green-500 px-2 py-0.5 rounded-full">
               Configured
             </span>
@@ -390,7 +490,7 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
         </div>
       </Section>
 
-      {/* Section B: Spending Breakdown (NEW) */}
+      {/* Section B: Spending Breakdown */}
       <Section
         title="Spending Breakdown"
         icon={<Wallet className="w-5 h-5 text-emerald-500" />}
@@ -506,7 +606,7 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
               <div className="space-y-2 mb-4">
                 {annualBudgets.map((budget) => (
                   <div
-                    key={budget._id}
+                    key={budget.id}
                     className={cn(
                       "flex items-center justify-between p-3 rounded-lg border",
                       budget.isEssential
@@ -536,7 +636,7 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => handleToggleEssential(budget._id, budget.isEssential ?? false)}
+                        onClick={() => handleToggleEssential(budget.id, budget.isEssential ?? false)}
                         title={budget.isEssential ? "Mark as discretionary" : "Mark as essential"}
                       >
                         <Shield
@@ -549,7 +649,7 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => handleDeleteGoal(budget._id)}
+                        onClick={() => handleDeleteGoal(budget.id)}
                         className="text-red-500 hover:text-red-600"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -647,7 +747,7 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
                   tooltip={
                     <div className="space-y-2">
                       <p>Average annual return AFTER inflation.</p>
-                      <p>5% real return ≈ 8% nominal if inflation is 3%.</p>
+                      <p>5% real return = 8% nominal if inflation is 3%.</p>
                       <p className="text-xs text-muted-foreground">
                         Historical balanced portfolio (60/40): ~5% real
                       </p>
@@ -1061,7 +1161,7 @@ export function UnifiedSettingsForm({ onSettingsChanged }: UnifiedSettingsFormPr
               tooltip={
                 <div className="space-y-2">
                   <p>How long should your money last?</p>
-                  <p>95 is conservative—about 25% of 65-year-olds live past 90.</p>
+                  <p>95 is conservative--about 25% of 65-year-olds live past 90.</p>
                   <p className="text-xs text-muted-foreground">
                     Higher = safer but requires more savings
                   </p>

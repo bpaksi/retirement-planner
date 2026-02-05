@@ -1,9 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
-import { Id } from "../../../convex/_generated/dataModel";
+import { useState, useEffect } from "react";
+import { fetchPotentialLinks, fetchLinkedTransaction } from "@/app/actions/data";
+import { linkTransactions, unlinkTransactions } from "@/app/actions/transactions";
 import {
   Dialog,
   DialogHeader,
@@ -18,14 +17,32 @@ import { cn } from "@/lib/utils";
 import { Link2, Link2Off, Check, AlertTriangle } from "lucide-react";
 
 interface Transaction {
-  _id: Id<"transactions">;
+  id: string;
   description: string;
   amount: number;
   date: number;
-  accountId: Id<"accounts">;
-  linkedTransactionId?: Id<"transactions">;
+  accountId: string;
+  linkedTransactionId?: string | null;
   account?: { name: string } | null;
   linkedAccountName?: string | null;
+}
+
+interface PotentialLink {
+  _id: string;
+  accountId: string;
+  accountName: string;
+  date: number;
+  description: string;
+  amount: number;
+  score: number;
+}
+
+interface LinkedTransactionDetails {
+  id: string;
+  description: string;
+  amount: number;
+  date: number;
+  account?: { name: string } | null;
 }
 
 interface LinkTransactionDialogProps {
@@ -41,39 +58,76 @@ export function LinkTransactionDialog({
   onClose,
   onLinkComplete,
 }: LinkTransactionDialogProps) {
-  const [selectedId, setSelectedId] = useState<Id<"transactions"> | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Queries
-  const potentialLinks = useQuery(
-    api.transactions.linking.findPotentialLinks,
-    open && !transaction.linkedTransactionId
-      ? { transactionId: transaction._id }
-      : "skip"
-  );
-
-  const linkedTransaction = useQuery(
-    api.transactions.linking.getLinkedTransaction,
-    open && transaction.linkedTransactionId
-      ? { transactionId: transaction._id }
-      : "skip"
-  );
-
-  // Mutations
-  const linkTransactions = useMutation(api.transactions.linking.linkTransactions);
-  const unlinkTransactions = useMutation(api.transactions.linking.unlinkTransactions);
+  const [potentialLinks, setPotentialLinks] = useState<PotentialLink[] | undefined>(undefined);
+  const [linkedTransaction, setLinkedTransaction] = useState<LinkedTransactionDetails | null>(null);
+  const [isLoadingPotential, setIsLoadingPotential] = useState(false);
+  const [isLoadingLinked, setIsLoadingLinked] = useState(false);
 
   const isLinked = !!transaction.linkedTransactionId;
+
+  // Load potential links when dialog opens and transaction is not linked
+  useEffect(() => {
+    if (!open) {
+      // Reset state when dialog closes
+      setSelectedId(null);
+      setPotentialLinks(undefined);
+      setLinkedTransaction(null);
+      return;
+    }
+
+    if (!isLinked) {
+      async function loadPotentialLinks() {
+        setIsLoadingPotential(true);
+        try {
+          const links = await fetchPotentialLinks(transaction.id);
+          setPotentialLinks(links);
+        } catch (error) {
+          console.error("Failed to load potential links:", error);
+          setPotentialLinks([]);
+        } finally {
+          setIsLoadingPotential(false);
+        }
+      }
+      loadPotentialLinks();
+    }
+  }, [open, isLinked, transaction.id]);
+
+  // Load linked transaction details when dialog opens and transaction is linked
+  useEffect(() => {
+    if (!open || !isLinked) {
+      return;
+    }
+
+    async function loadLinkedTransaction() {
+      setIsLoadingLinked(true);
+      try {
+        const linked = await fetchLinkedTransaction(transaction.id);
+        if (linked) {
+          setLinkedTransaction({
+            id: linked.id,
+            description: linked.description,
+            amount: linked.amount,
+            date: linked.date,
+            account: linked.account,
+          });
+        }
+      } catch (error) {
+        console.error("Failed to load linked transaction:", error);
+      } finally {
+        setIsLoadingLinked(false);
+      }
+    }
+    loadLinkedTransaction();
+  }, [open, isLinked, transaction.id]);
 
   const handleLink = async () => {
     if (!selectedId) return;
 
     setIsSubmitting(true);
     try {
-      await linkTransactions({
-        transactionId1: transaction._id,
-        transactionId2: selectedId,
-      });
+      await linkTransactions(transaction.id, selectedId);
       onLinkComplete?.();
       onClose();
     } catch (error) {
@@ -86,9 +140,7 @@ export function LinkTransactionDialog({
   const handleUnlink = async () => {
     setIsSubmitting(true);
     try {
-      await unlinkTransactions({
-        transactionId: transaction._id,
-      });
+      await unlinkTransactions(transaction.id);
       onLinkComplete?.();
       onClose();
     } catch (error) {
@@ -157,9 +209,7 @@ export function LinkTransactionDialog({
         {/* Already Linked - Show linked transaction */}
         {isLinked && linkedTransaction && (
           <div className="space-y-3">
-            <p className="text-sm font-medium text-muted-foreground">
-              Linked to:
-            </p>
+            <p className="text-sm font-medium text-muted-foreground">Linked to:</p>
             <div className="p-3 bg-primary/5 rounded-lg border border-primary/20">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
@@ -184,6 +234,12 @@ export function LinkTransactionDialog({
           </div>
         )}
 
+        {isLinked && isLoadingLinked && (
+          <div className="text-center py-6 text-muted-foreground text-sm">
+            Loading linked transaction...
+          </div>
+        )}
+
         {/* Not Linked - Show potential matches */}
         {!isLinked && (
           <div className="space-y-3">
@@ -191,9 +247,13 @@ export function LinkTransactionDialog({
               Potential matches:
             </p>
 
-            {potentialLinks === undefined ? (
+            {isLoadingPotential ? (
               <div className="text-center py-6 text-muted-foreground text-sm">
                 Searching for matches...
+              </div>
+            ) : potentialLinks === undefined ? (
+              <div className="text-center py-6 text-muted-foreground text-sm">
+                Loading...
               </div>
             ) : potentialLinks.length === 0 ? (
               <div className="text-center py-6">
@@ -210,7 +270,7 @@ export function LinkTransactionDialog({
                 {potentialLinks.map((match) => (
                   <button
                     key={match._id}
-                    onClick={() => setSelectedId(match._id as Id<"transactions">)}
+                    onClick={() => setSelectedId(match._id)}
                     className={cn(
                       "w-full p-3 rounded-lg border text-left transition-colors",
                       selectedId === match._id
@@ -266,10 +326,7 @@ export function LinkTransactionDialog({
             {isSubmitting ? "Unlinking..." : "Unlink Transfer"}
           </Button>
         ) : (
-          <Button
-            onClick={handleLink}
-            disabled={!selectedId || isSubmitting}
-          >
+          <Button onClick={handleLink} disabled={!selectedId || isSubmitting}>
             <Link2 className="w-4 h-4 mr-2" />
             {isSubmitting ? "Linking..." : "Link Transactions"}
           </Button>

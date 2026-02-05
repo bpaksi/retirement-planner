@@ -1,10 +1,8 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
-import { useQuery } from "convex/react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { format, startOfMonth, endOfMonth, parse } from "date-fns";
-import { api } from "../../../convex/_generated/api";
 import { Sidebar } from "@/components/layout/Sidebar";
 import {
   Card,
@@ -18,8 +16,13 @@ import { SpendingPieChart } from "@/components/charts/SpendingPieChart";
 import { SpendingTrendChart } from "@/components/charts/SpendingTrendChart";
 import { formatCurrency } from "@/lib/utils";
 import { TrendingDown, TrendingUp, DollarSign, PiggyBank, ArrowLeftRight, Info } from "lucide-react";
+import { fetchSpendingByCategory, fetchSpendingTrend } from "@/app/actions/data";
 
 type DateRange = "thisMonth" | "lastMonth" | "last3Months" | "last6Months" | "thisYear" | "lastYear" | "allTime";
+
+// Types for the spending data returned from analytics queries
+type SpendingData = Awaited<ReturnType<typeof fetchSpendingByCategory>>;
+type TrendData = Awaited<ReturnType<typeof fetchSpendingTrend>>;
 
 function getDateRange(range: DateRange): { start: number; end: number } {
   const now = new Date();
@@ -67,7 +70,45 @@ export default function SpendingPage() {
   const [dateRange, setDateRange] = useState<DateRange>("lastYear");
   const [showEssentialOnly, setShowEssentialOnly] = useState<boolean | null>(null);
 
+  // State for fetched data
+  const [spendingData, setSpendingData] = useState<SpendingData | null>(null);
+  const [trendData, setTrendData] = useState<TrendData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
   const { start, end } = useMemo(() => getDateRange(dateRange), [dateRange]);
+
+  // Fetch spending data when date range changes
+  useEffect(() => {
+    const loadSpending = async () => {
+      setIsLoading(true);
+      try {
+        const spending = await fetchSpendingByCategory({
+          startDate: start,
+          endDate: end,
+        });
+        setSpendingData(spending);
+      } catch (error) {
+        console.error("Error fetching spending data:", error);
+        setSpendingData(null);
+      }
+      setIsLoading(false);
+    };
+    loadSpending();
+  }, [start, end]);
+
+  // Fetch trend data on mount
+  useEffect(() => {
+    const loadTrend = async () => {
+      try {
+        const trend = await fetchSpendingTrend({ months: 12 });
+        setTrendData(trend);
+      } catch (error) {
+        console.error("Error fetching trend data:", error);
+        setTrendData(null);
+      }
+    };
+    loadTrend();
+  }, []);
 
   // Navigate to transactions page with category filter
   const handleCategoryClick = useCallback(
@@ -93,15 +134,6 @@ export default function SpendingPage() {
     },
     [router]
   );
-
-  const spendingData = useQuery(api.analytics.spending.getSpendingByCategory, {
-    startDate: start,
-    endDate: end,
-  });
-
-  const trendData = useQuery(api.analytics.spending.getSpendingTrend, {
-    months: 12,
-  });
 
   const filteredSpending = useMemo(() => {
     if (!spendingData) return null;
@@ -280,7 +312,7 @@ export default function SpendingPage() {
                   />
                 ) : (
                   <div className="h-[300px] flex items-center justify-center text-muted-foreground">
-                    Loading...
+                    {isLoading ? "Loading..." : "No data available"}
                   </div>
                 )}
               </CardContent>
@@ -301,7 +333,7 @@ export default function SpendingPage() {
                   />
                 ) : (
                   <div className="h-[300px] flex items-center justify-center text-muted-foreground">
-                    Loading...
+                    {isLoading ? "Loading..." : "No data available"}
                   </div>
                 )}
               </CardContent>
@@ -323,19 +355,19 @@ export default function SpendingPage() {
                     const percentage = spendingData
                       ? (item.total / spendingData.totalSpending) * 100
                       : 0;
-                    const isClickable = !!item.category?._id;
+                    const isClickable = !!item.category?.id;
 
                     return (
                       <div
-                        key={item.category?._id || index}
+                        key={item.category?.id || index}
                         className={`flex items-center gap-4 p-2 -mx-2 rounded-lg transition-colors ${
                           isClickable
                             ? "cursor-pointer hover:bg-muted/50"
                             : ""
                         }`}
                         onClick={() => {
-                          if (item.category?._id) {
-                            handleCategoryClick(item.category._id);
+                          if (item.category?.id) {
+                            handleCategoryClick(item.category.id);
                           }
                         }}
                       >
@@ -377,7 +409,7 @@ export default function SpendingPage() {
                 </div>
               ) : (
                 <div className="py-8 text-center text-muted-foreground">
-                  Loading...
+                  {isLoading ? "Loading..." : "No data available"}
                 </div>
               )}
             </CardContent>

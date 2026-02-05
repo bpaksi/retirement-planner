@@ -1,12 +1,11 @@
 "use client";
 
-import { Id } from "../../../convex/_generated/dataModel";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import { Check } from "lucide-react";
 
 interface SimilarTransaction {
-  _id: Id<"transactions">;
+  id: string;
   description: string;
   amount: number;
   date: number;
@@ -17,8 +16,8 @@ interface SimilarTransaction {
 
 interface SimilarTransactionsListProps {
   transactions: SimilarTransaction[] | undefined;
-  selectedIds: Set<Id<"transactions">>;
-  onToggle: (id: Id<"transactions">) => void;
+  selectedIds: Set<string>;
+  onToggle: (id: string) => void;
   onToggleAll: () => void;
   isLoading: boolean;
 }
@@ -166,8 +165,8 @@ export function SimilarTransactionsList({
 
   const allSelected =
     transactions.length > 0 &&
-    transactions.every((t) => selectedIds.has(t._id));
-  const someSelected = transactions.some((t) => selectedIds.has(t._id));
+    transactions.every((t) => selectedIds.has(t.id));
+  const someSelected = transactions.some((t) => selectedIds.has(t.id));
 
   return (
     <div className="flex flex-col h-full">
@@ -188,10 +187,10 @@ export function SimilarTransactionsList({
       <div className="flex-1 overflow-y-auto -mx-1 px-1 space-y-1">
         {transactions.map((transaction) => (
           <TransactionCheckbox
-            key={transaction._id}
+            key={transaction.id}
             transaction={transaction}
-            isSelected={selectedIds.has(transaction._id)}
-            onToggle={() => onToggle(transaction._id)}
+            isSelected={selectedIds.has(transaction.id)}
+            onToggle={() => onToggle(transaction.id)}
           />
         ))}
       </div>

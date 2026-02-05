@@ -1,8 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
-import { useQuery, useAction } from "convex/react";
-import { api } from "../../../convex/_generated/api";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/Tabs";
@@ -11,35 +9,102 @@ import { ResultsComparisonDashboard } from "@/components/projections/ResultsComp
 import { WhatIfCalculator } from "@/components/monteCarlo/WhatIfCalculator";
 import { calculateProjection } from "@/lib/calculations/projections";
 import { Loader2, Settings, BarChart3, FlaskConical } from "lucide-react";
+import { runWhatIfSimulation } from "@/app/actions/monteCarlo";
+import {
+  fetchSimulationInputs,
+  fetchAssumptionsWithDefaults,
+  fetchGuardrailsConfig,
+} from "@/app/actions/data";
+
+// Type definitions for loaded data
+type SimulationInputs = Awaited<ReturnType<typeof fetchSimulationInputs>>;
+type Assumptions = Awaited<ReturnType<typeof fetchAssumptionsWithDefaults>>;
+type GuardrailsConfig = Awaited<ReturnType<typeof fetchGuardrailsConfig>>;
+
+interface ProjectionInputs {
+  profile: {
+    currentAge: number;
+    annualSpending: number;
+  } | null;
+  currentNetWorth: number;
+}
+
+interface GuardrailsProjection {
+  summary: {
+    minSpending: number;
+    maxSpending: number;
+  } | null;
+}
 
 export default function ProjectionsPage() {
   const [activeTab, setActiveTab] = useState("results");
   const [settingsKey, setSettingsKey] = useState(0);
 
-  // Queries for What-If tab
-  const simulationInputs = useQuery(api.monteCarlo.queries.getSimulationInputs);
-  const assumptions = useQuery(api.monteCarlo.queries.getAssumptionsWithDefaults);
-  const projectionInputs = useQuery(api.projections.queries.getProjectionInputs);
-  const guardrailsConfig = useQuery(api.guardrails.queries.getWithDefaults);
-  const guardrailsProjection = useQuery(
-    api.projections.queries.calculateProjectionWithGuardrails,
-    projectionInputs?.profile && simulationInputs?.retirementAge
-      ? {
-          currentNetWorth: projectionInputs.currentNetWorth,
-          annualSpending: projectionInputs.profile.annualSpending,
-          currentAge: projectionInputs.profile.currentAge,
-          retirementAge: simulationInputs.retirementAge,
-        }
-      : "skip"
-  );
-
-  // Actions for What-If
-  const runWhatIf = useAction(api.monteCarlo.actions.runWhatIfSimulation);
+  // State for loaded data
+  const [simulationInputs, setSimulationInputs] = useState<SimulationInputs | null>(null);
+  const [assumptions, setAssumptions] = useState<Assumptions | null>(null);
+  const [projectionInputs, setProjectionInputs] = useState<ProjectionInputs | null>(null);
+  const [guardrailsConfig, setGuardrailsConfig] = useState<GuardrailsConfig | null>(null);
+  const [guardrailsProjection, setGuardrailsProjection] = useState<GuardrailsProjection | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Baseline for What-If (requires a run first)
   const [whatIfBaseline] = useState<{
     successRate: number;
   } | null>(null);
+
+  // Load data on mount and when settingsKey changes
+  useEffect(() => {
+    async function loadData() {
+      setIsLoading(true);
+      try {
+        // These are synchronous database queries - wrap in Promise.resolve for consistency
+        const [inputs, assumptionsData, guardrails] = await Promise.all([
+          fetchSimulationInputs(),
+          fetchAssumptionsWithDefaults(),
+          fetchGuardrailsConfig(),
+        ]);
+
+        setSimulationInputs(inputs);
+        setAssumptions(assumptionsData);
+        setGuardrailsConfig(guardrails);
+
+        // Build projection inputs from simulation inputs
+        if (inputs) {
+          setProjectionInputs({
+            profile: inputs.currentAge !== null ? {
+              currentAge: inputs.currentAge,
+              annualSpending: inputs.totalAnnualSpending,
+            } : null,
+            currentNetWorth: inputs.portfolioValue,
+          });
+
+          // Calculate guardrails projection if profile and retirement age available
+          if (inputs.currentAge !== null && inputs.retirementAge !== null && guardrails?.isEnabled) {
+            // For the guardrails projection, we use the standard projection calculation
+            // and add the spending range from guardrails config
+            const spendingFloor = guardrails.spendingFloor ?? inputs.essentialFloor;
+            const spendingCeiling = guardrails.spendingCeiling ?? inputs.totalAnnualSpending * 1.25;
+
+            setGuardrailsProjection({
+              summary: {
+                minSpending: spendingFloor,
+                maxSpending: spendingCeiling,
+              },
+            });
+          } else {
+            setGuardrailsProjection(null);
+          }
+        }
+      } catch (error) {
+        console.error("Error loading projection data:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    loadData();
+  }, [settingsKey]);
 
   // Calculate standard projection for baseline comparison
   const standardProjection = useMemo(() => {
@@ -67,13 +132,53 @@ export default function ProjectionsPage() {
       ssClaimingAge?: number;
       guardrailsEnabled?: boolean;
     }) => {
-      const result = await runWhatIf(params);
+      // Build simulation overrides
+      const overrides: Parameters<typeof runWhatIfSimulation>[0] = {};
+
+      if (params.annualSpending !== undefined) {
+        overrides.annualSpending = params.annualSpending;
+      }
+
+      if (params.retirementAge !== undefined && simulationInputs?.planToAge) {
+        overrides.years = simulationInputs.planToAge - params.retirementAge;
+      }
+
+      if (params.planToAge !== undefined && simulationInputs?.retirementAge) {
+        overrides.years = params.planToAge - simulationInputs.retirementAge;
+      }
+
+      if (params.guardrailsEnabled !== undefined) {
+        if (params.guardrailsEnabled && simulationInputs?.guardrails) {
+          overrides.guardrails = {
+            enabled: true,
+            upperThreshold: simulationInputs.guardrails.upperThreshold,
+            lowerThreshold: simulationInputs.guardrails.lowerThreshold,
+            increasePercent: simulationInputs.guardrails.increasePercent,
+            decreasePercent: simulationInputs.guardrails.decreasePercent,
+          };
+        } else {
+          overrides.guardrails = undefined;
+        }
+      }
+
+      const result = await runWhatIfSimulation(overrides);
+
+      // Calculate changes from baseline
+      const baselineSuccessRate = whatIfBaseline?.successRate ?? 0;
+      const changesFromBaseline: string[] = [];
+
+      const successRateDiff = result.successRate - baselineSuccessRate;
+      if (Math.abs(successRateDiff) > 0.001) {
+        const direction = successRateDiff > 0 ? "increase" : "decrease";
+        changesFromBaseline.push(`Success rate ${direction}d by ${Math.abs(successRateDiff * 100).toFixed(1)}%`);
+      }
+
       return {
         successRate: result.successRate,
-        changesFromBaseline: result.changesFromBaseline,
+        changesFromBaseline,
       };
     },
-    [runWhatIf]
+    [simulationInputs, whatIfBaseline]
   );
 
   // Set baseline when switching to What-If tab
@@ -81,7 +186,7 @@ export default function ProjectionsPage() {
     setActiveTab(value);
   };
 
-  const isLoading = simulationInputs === undefined || assumptions === undefined;
+  const dataIsLoading = isLoading || simulationInputs === null || assumptions === null;
 
   return (
     <div className="flex h-screen">
@@ -129,7 +234,7 @@ export default function ProjectionsPage() {
 
             {/* What-If Tab */}
             <TabsContent value="whatif" className="mt-0">
-              {isLoading ? (
+              {dataIsLoading ? (
                 <div className="flex items-center justify-center py-24">
                   <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
                 </div>

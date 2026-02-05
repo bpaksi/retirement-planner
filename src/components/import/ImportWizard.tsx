@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
-import { Id } from "../../../convex/_generated/dataModel";
+import { useState, useCallback, useMemo, useEffect } from "react";
+import { fetchAccounts } from "@/app/actions/data";
+import type { Account } from "@/db/queries/accounts";
+import { createAccount } from "@/app/actions/accounts";
+import { importBatch } from "@/app/actions/transactions";
+import { importHoldings } from "@/app/actions/holdings";
 import {
   parseCSVFile,
   ParseResult,
@@ -42,7 +44,7 @@ type ImportType = "transactions" | "holdings";
 
 interface ImportWizardProps {
   onComplete?: () => void;
-  defaultAccountId?: Id<"accounts">;
+  defaultAccountId?: string;
 }
 
 // Format currency for display
@@ -131,8 +133,9 @@ export function ImportWizard({
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [holdingsResult, setHoldingsResult] =
     useState<HoldingsParseResult | null>(null);
-  const [selectedAccountId, setSelectedAccountId] =
-    useState<Id<"accounts"> | null>(defaultAccountId ?? null);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
+    defaultAccountId ?? null
+  );
   const [columnMapping, setColumnMapping] = useState<Partial<ColumnMapping>>(
     {}
   );
@@ -152,10 +155,25 @@ export function ImportWizard({
   const [isCreatingAccounts, setIsCreatingAccounts] = useState(false);
   const [createdAccountsCount, setCreatedAccountsCount] = useState(0);
 
-  const accounts = useQuery(api.accounts.queries.list, { activeOnly: true });
-  const importBatch = useMutation(api.transactions.import.importBatch);
-  const importHoldings = useMutation(api.holdings.import.importHoldings);
-  const createAccount = useMutation(api.accounts.mutations.create);
+  // Data loading state
+  const [accounts, setAccounts] = useState<Account[] | null>(null);
+  const [isLoadingAccounts, setIsLoadingAccounts] = useState(true);
+
+  // Load accounts on mount
+  useEffect(() => {
+    async function loadAccounts() {
+      try {
+        const data = await fetchAccounts(true);
+        setAccounts(data);
+      } catch (error) {
+        console.error("Failed to load accounts:", error);
+        setAccounts([]);
+      } finally {
+        setIsLoadingAccounts(false);
+      }
+    }
+    loadAccounts();
+  }, [createdAccountsCount]); // Reload when accounts are created
 
   // Detect potential accounts from transactions
   const suggestedAccounts = useMemo(() => {
@@ -216,7 +234,7 @@ export function ImportWizard({
     } finally {
       setIsCreatingAccounts(false);
     }
-  }, [selectedSuggestions, suggestedAccounts, createAccount]);
+  }, [selectedSuggestions, suggestedAccounts]);
 
   const handleFileSelect = useCallback(async (selectedFile: File) => {
     setFile(selectedFile);
@@ -345,8 +363,6 @@ export function ImportWizard({
     holdingsResult,
     selectedAccountId,
     file,
-    importBatch,
-    importHoldings,
     importType,
   ]);
 
@@ -459,18 +475,21 @@ export function ImportWizard({
                 <label className="block text-sm font-medium mb-2">
                   Import to Account
                 </label>
-                {accounts && accounts.length > 0 ? (
+                {isLoadingAccounts ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground p-4 bg-muted rounded-lg">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Loading accounts...
+                  </div>
+                ) : accounts && accounts.length > 0 ? (
                   <Select
                     value={selectedAccountId || ""}
                     onChange={(e) =>
-                      setSelectedAccountId(
-                        e.target.value as Id<"accounts"> | null
-                      )
+                      setSelectedAccountId(e.target.value || null)
                     }
                   >
                     <option value="">Select an account...</option>
                     {accounts.map((account) => (
-                      <option key={account._id} value={account._id}>
+                      <option key={account.id} value={account.id}>
                         {account.name} ({account.institution})
                       </option>
                     ))}

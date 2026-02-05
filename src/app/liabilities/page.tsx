@@ -1,10 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
-import { Id } from "../../../convex/_generated/dataModel";
 import { Sidebar } from "@/components/layout/Sidebar";
 import {
   Card,
@@ -32,6 +29,17 @@ import {
   Plus,
   ChevronRight,
 } from "lucide-react";
+import { fetchLiabilities, fetchUnlinkedLoanAccounts } from "@/app/actions/data";
+import type { Liability } from "@/db/queries/liabilities";
+import { createLiability } from "@/app/actions/liabilities";
+
+// Account type from schema
+type Account = {
+  id: string;
+  name: string;
+  type: string;
+  institution: string;
+};
 
 const LIABILITY_ICONS = {
   mortgage: Home,
@@ -76,6 +84,22 @@ function formatDate(timestamp: number): string {
   });
 }
 
+// Calculate monthly payment using amortization formula
+function calculateMonthlyPayment(
+  principal: number,
+  annualRate: number,
+  termMonths: number
+): number {
+  if (annualRate === 0) {
+    return principal / termMonths;
+  }
+  const monthlyRate = annualRate / 12;
+  return (
+    (principal * monthlyRate * Math.pow(1 + monthlyRate, termMonths)) /
+    (Math.pow(1 + monthlyRate, termMonths) - 1)
+  );
+}
+
 type LoanFormData = {
   originalAmount: string;
   currentBalance: string;
@@ -94,17 +118,50 @@ const initialFormData: LoanFormData = {
 
 export default function LiabilitiesPage() {
   const [setupAccount, setSetupAccount] = useState<{
-    id: Id<"accounts">;
+    id: string;
     name: string;
     type: string;
   } | null>(null);
   const [formData, setFormData] = useState<LoanFormData>(initialFormData);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const liabilities = useQuery(api.liabilities.queries.list, {});
-  const unlinkedLoanAccounts = useQuery(api.liabilities.queries.getUnlinkedLoanAccounts, {});
+  // State for data fetched from database
+  const [liabilities, setLiabilities] = useState<Liability[] | null>(null);
+  const [unlinkedLoanAccounts, setUnlinkedLoanAccounts] = useState<Account[] | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const createLiability = useMutation(api.liabilities.mutations.create);
+  // Fetch data on mount
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const [liabilitiesData, unlinkedAccountsData] = await Promise.all([
+          fetchLiabilities(),
+          fetchUnlinkedLoanAccounts(),
+        ]);
+        setLiabilities(liabilitiesData);
+        setUnlinkedLoanAccounts(unlinkedAccountsData);
+      } catch (error) {
+        console.error("Failed to fetch liabilities data:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    loadData();
+  }, []);
+
+  // Refetch data after mutation
+  const refetchData = async () => {
+    try {
+      const [liabilitiesData, unlinkedAccountsData] = await Promise.all([
+        fetchLiabilities(),
+        fetchUnlinkedLoanAccounts(),
+      ]);
+      setLiabilities(liabilitiesData);
+      setUnlinkedLoanAccounts(unlinkedAccountsData);
+    } catch (error) {
+      console.error("Failed to refetch liabilities data:", error);
+    }
+  };
 
   const totalDebt = liabilities?.reduce((sum, l) => sum + l.currentBalance, 0) ?? 0;
 
@@ -124,12 +181,20 @@ export default function LiabilitiesPage() {
         ? new Date(formData.startDate).getTime()
         : Date.now();
 
+      // Calculate minimum payment using amortization formula
+      const minimumPayment = calculateMonthlyPayment(
+        originalAmount,
+        interestRate,
+        termMonths
+      );
+
       await createLiability({
         type: setupAccount.type === "mortgage" ? "mortgage" : "personal_loan",
         name: setupAccount.name,
         originalAmount,
         currentBalance,
         interestRate,
+        minimumPayment,
         termMonths,
         startDate,
         linkedAccountId: setupAccount.id,
@@ -137,12 +202,28 @@ export default function LiabilitiesPage() {
 
       setSetupAccount(null);
       setFormData(initialFormData);
+      await refetchData();
     } catch (error) {
       console.error("Failed to create liability:", error);
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen">
+        <Sidebar />
+        <main className="flex-1 overflow-auto">
+          <div className="p-8">
+            <div className="flex items-center justify-center h-64">
+              <div className="text-muted-foreground">Loading liabilities...</div>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen">
@@ -203,7 +284,7 @@ export default function LiabilitiesPage() {
                   : 0;
 
                 return (
-                  <Link key={liability._id} href={`/liabilities/${liability._id}`}>
+                  <Link key={liability.id} href={`/liabilities/${liability.id}`}>
                     <Card className="cursor-pointer hover:border-primary/50 transition-colors group">
                       <CardContent className="pt-6">
                         <div className="flex items-start gap-4">
@@ -302,7 +383,7 @@ export default function LiabilitiesPage() {
                 {unlinkedLoanAccounts.map((account) => {
                   const Icon = account.type === "mortgage" ? Home : Wallet;
                   return (
-                    <Card key={account._id} className="border-warning/50">
+                    <Card key={account.id} className="border-warning/50">
                       <CardContent className="pt-6">
                         <div className="flex items-start gap-4">
                           <div className="h-10 w-10 rounded-full bg-warning/10 flex items-center justify-center flex-shrink-0">
@@ -321,7 +402,7 @@ export default function LiabilitiesPage() {
                               className="mt-3 w-full"
                               onClick={() =>
                                 setSetupAccount({
-                                  id: account._id,
+                                  id: account.id,
                                   name: account.name,
                                   type: account.type,
                                 })

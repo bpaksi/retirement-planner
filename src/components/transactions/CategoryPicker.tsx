@@ -1,10 +1,9 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { Id } from "../../../convex/_generated/dataModel";
 
 interface Category {
-  _id: Id<"categories">;
+  id: string;
   name: string;
   type: "expense" | "income" | "transfer";
   isEssential: boolean;
@@ -13,8 +12,8 @@ interface Category {
 
 interface CategoryPickerProps {
   categories: Category[];
-  onSelect: (categoryId: Id<"categories">) => void;
-  selectedId?: Id<"categories">;
+  onSelect: (categoryId: string) => void;
+  selectedId?: string;
 }
 
 interface GroupedCategories {
@@ -40,8 +39,8 @@ function groupCategories(categories: Category[]): GroupedCategories {
 interface CategoryGroupProps {
   label: string;
   categories: Category[];
-  onSelect: (categoryId: Id<"categories">) => void;
-  selectedId?: Id<"categories">;
+  onSelect: (categoryId: string) => void;
+  selectedId?: string;
 }
 
 function CategoryGroup({
@@ -59,11 +58,11 @@ function CategoryGroup({
       </div>
       {categories.map((category) => (
         <button
-          key={category._id}
-          onClick={() => onSelect(category._id)}
+          key={category.id}
+          onClick={() => onSelect(category.id)}
           className={cn(
             "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent transition-colors text-left",
-            selectedId === category._id && "bg-accent"
+            selectedId === category.id && "bg-accent"
           )}
         >
           <span

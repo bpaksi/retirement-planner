@@ -1,8 +1,3 @@
-"use client";
-
-import { useEffect } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../convex/_generated/api";
 import { Sidebar } from "@/components/layout/Sidebar";
 import {
   Card,
@@ -25,38 +20,28 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { listAccounts } from "@/db/queries/accounts";
+import { getRecentTransactions, getFlaggedTransactions } from "@/db/queries/transactions";
+import { getSpendingByCategory, getMonthlyTotals } from "@/db/queries/analytics";
+import { checkSeedStatus, runSeed } from "@/db/seed";
 
-export default function DashboardPage() {
+export default async function DashboardPage() {
   // Check and run seed if needed
-  const seedStatus = useQuery(api.seed.checkSeedStatus);
-  const seedAll = useMutation(api.seed.seedAll);
-
-  useEffect(() => {
-    if (seedStatus && !seedStatus.categoriesSeeded) {
-      seedAll();
-    }
-  }, [seedStatus, seedAll]);
+  const seedStatus = checkSeedStatus();
+  if (!seedStatus.categoriesSeeded) {
+    runSeed();
+  }
 
   // Get current month date range
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
   const endOfMonth = now.getTime();
 
-  const accounts = useQuery(api.accounts.queries.list, { activeOnly: true });
-  const recentTransactions = useQuery(api.transactions.queries.getRecent, {
-    limit: 5,
-  });
-  const flaggedTransactions = useQuery(api.transactions.queries.getFlagged, {
-    limit: 5,
-  });
-  const spendingData = useQuery(api.analytics.spending.getSpendingByCategory, {
-    startDate: startOfMonth,
-    endDate: endOfMonth,
-  });
-  const monthlyTotals = useQuery(api.analytics.spending.getMonthlyTotals, {
-    year: now.getFullYear(),
-    month: now.getMonth() + 1,
-  });
+  const accounts = listAccounts(true);
+  const recentTransactions = getRecentTransactions(5);
+  const flaggedTransactions = getFlaggedTransactions(5);
+  const spendingData = getSpendingByCategory({ startDate: startOfMonth, endDate: endOfMonth });
+  const monthlyTotals = getMonthlyTotals({ year: now.getFullYear(), month: now.getMonth() + 1 });
 
   const hasData = accounts && accounts.length > 0;
 
@@ -229,7 +214,7 @@ export default function DashboardPage() {
                       <div className="space-y-3">
                         {recentTransactions.map((tx) => (
                           <div
-                            key={tx._id}
+                            key={tx.id}
                             className="flex items-center justify-between py-2 border-b border-border last:border-0"
                           >
                             <div className="flex items-center gap-3 min-w-0">

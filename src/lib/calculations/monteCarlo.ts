@@ -78,6 +78,7 @@ export interface YearResult {
   baseSpending?: number;
   goalsSpending?: number;
   ssIncome: number;
+  workIncome?: number;
   endBalance: number;
   guardrailTriggered: "ceiling" | "floor" | null;
 }

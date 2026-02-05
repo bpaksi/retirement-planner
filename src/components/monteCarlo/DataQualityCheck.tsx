@@ -1,7 +1,6 @@
 "use client";
 
-import { useQuery } from "convex/react";
-import { api } from "../../../convex/_generated/api";
+import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/Card";
 import {
   AlertTriangle,
@@ -13,6 +12,11 @@ import {
   Minus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  fetchSpendingSummary,
+  fetchGuardrailsConfig,
+  fetchAssumptionsWithDefaults,
+} from "@/app/actions/data";
 
 interface DataQualityCheckProps {
   onQualityChange?: (isReliable: boolean) => void;
@@ -26,19 +30,39 @@ interface Warning {
   detail?: string;
 }
 
+type SpendingSummary = Awaited<ReturnType<typeof fetchSpendingSummary>>;
+type GuardrailsConfig = Awaited<ReturnType<typeof fetchGuardrailsConfig>>;
+type Assumptions = Awaited<ReturnType<typeof fetchAssumptionsWithDefaults>>;
+
 export function DataQualityCheck({ onQualityChange }: DataQualityCheckProps) {
-  const spendingSummary = useQuery(api.analytics.spending.getSpendingSummary, {
-    monthsBack: 12,
-  });
-  const guardrailsConfig = useQuery(api.guardrails.queries.getWithDefaults);
-  const assumptions = useQuery(api.monteCarlo.queries.getAssumptionsWithDefaults);
+  const [spendingSummary, setSpendingSummary] = useState<SpendingSummary | null>(null);
+  const [guardrailsConfig, setGuardrailsConfig] = useState<GuardrailsConfig | null>(null);
+  const [assumptions, setAssumptions] = useState<Assumptions | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Load data on mount
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const [spending, guardrails, assumptionsData] = await Promise.all([
+          fetchSpendingSummary(),
+          fetchGuardrailsConfig(),
+          fetchAssumptionsWithDefaults(),
+        ]);
+        setSpendingSummary(spending);
+        setGuardrailsConfig(guardrails ?? null);
+        setAssumptions(assumptionsData);
+      } catch (err) {
+        console.error("Failed to load data quality check data:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    loadData();
+  }, []);
 
   // Loading state
-  if (
-    spendingSummary === undefined ||
-    guardrailsConfig === undefined ||
-    assumptions === undefined
-  ) {
+  if (isLoading || spendingSummary === null || assumptions === null) {
     return null;
   }
 
@@ -92,7 +116,7 @@ export function DataQualityCheck({ onQualityChange }: DataQualityCheckProps) {
   }
 
   // Check essential spending floor
-  if (guardrailsConfig.isEnabled && !guardrailsConfig.spendingFloor) {
+  if (guardrailsConfig?.isEnabled && !guardrailsConfig.spendingFloor) {
     warnings.push({
       severity: "warning",
       message: "Essential spending floor not set",

@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
-import { Id } from "../../../convex/_generated/dataModel";
+import { fetchSimilarTransactions } from "@/app/actions/data";
+import {
+  updateTransactionCategory,
+  bulkUpdateTransactionCategory,
+} from "@/app/actions/transactions";
 import { CategoryPicker } from "./CategoryPicker";
 import { SimilarTransactionsList } from "./SimilarTransactionsList";
 import { Button } from "@/components/ui/Button";
@@ -12,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { X, ArrowRight } from "lucide-react";
 
 interface Category {
-  _id: Id<"categories">;
+  id: string;
   name: string;
   type: "expense" | "income" | "transfer";
   isEssential: boolean;
@@ -20,12 +22,22 @@ interface Category {
 }
 
 interface Transaction {
-  _id: Id<"transactions">;
+  id: string;
   description: string;
   amount: number;
   date: number;
-  categoryId?: Id<"categories"> | null;
+  categoryId?: string | null;
   category?: { name: string; color: string } | null;
+}
+
+interface SimilarTransaction {
+  id: string;
+  description: string;
+  amount: number;
+  date: number;
+  similarityScore: number;
+  matchLevel: "strong" | "good" | "weak";
+  account?: { name: string } | null;
 }
 
 interface BatchCategoryAssignerProps {
@@ -41,40 +53,45 @@ export function BatchCategoryAssigner({
   onClose,
   onComplete,
 }: BatchCategoryAssignerProps) {
-  const [selectedCategoryId, setSelectedCategoryId] = useState<
-    Id<"categories"> | undefined
-  >(transaction.categoryId || undefined);
-  const [selectedIds, setSelectedIds] = useState<Set<Id<"transactions">>>(
-    new Set()
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>(
+    transaction.categoryId || undefined
   );
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [similarTransactions, setSimilarTransactions] = useState<SimilarTransaction[] | undefined>(
+    undefined
+  );
+  const [isLoading, setIsLoading] = useState(true);
   const hasInitializedSelection = useRef(false);
 
-  // Query similar transactions
-  const similarTransactions = useQuery(api.transactions.queries.findSimilar, {
-    transactionId: transaction._id,
-    limit: 10,
-  });
-
-  // Mutations
-  const updateCategory = useMutation(api.transactions.mutations.updateCategory);
-  const bulkUpdateCategory = useMutation(
-    api.transactions.mutations.bulkUpdateCategory
-  );
+  // Load similar transactions on mount
+  useEffect(() => {
+    async function loadSimilarTransactions() {
+      setIsLoading(true);
+      try {
+        const similar = await fetchSimilarTransactions(transaction.id, 10);
+        setSimilarTransactions(similar);
+      } catch (error) {
+        console.error("Failed to load similar transactions:", error);
+        setSimilarTransactions([]);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    loadSimilarTransactions();
+  }, [transaction.id]);
 
   // Pre-select high-confidence matches when query returns (only once)
-  // This is a valid pattern for initializing state from async query results
   useEffect(() => {
     if (similarTransactions && !hasInitializedSelection.current) {
       hasInitializedSelection.current = true;
       const highConfidence = similarTransactions
         .filter((t) => t.similarityScore >= 0.6)
-        .map((t) => t._id);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
+        .map((t) => t.id);
       setSelectedIds(new Set(highConfidence));
     }
   }, [similarTransactions]);
 
-  const handleToggle = useCallback((id: Id<"transactions">) => {
+  const handleToggle = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -89,11 +106,11 @@ export function BatchCategoryAssigner({
   const handleToggleAll = useCallback(() => {
     if (!similarTransactions) return;
 
-    const allSelected = similarTransactions.every((t) => selectedIds.has(t._id));
+    const allSelected = similarTransactions.every((t) => selectedIds.has(t.id));
     if (allSelected) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(similarTransactions.map((t) => t._id)));
+      setSelectedIds(new Set(similarTransactions.map((t) => t.id)));
     }
   }, [similarTransactions, selectedIds]);
 
@@ -104,19 +121,15 @@ export function BatchCategoryAssigner({
 
     try {
       // Update the main transaction
-      await updateCategory({
-        id: transaction._id,
-        categoryId: selectedCategoryId,
-        unflag: true,
-      });
+      await updateTransactionCategory(transaction.id, selectedCategoryId, true);
 
       // Update similar transactions if any selected
       if (selectedIds.size > 0) {
-        await bulkUpdateCategory({
-          ids: Array.from(selectedIds),
-          categoryId: selectedCategoryId,
-          unflag: true,
-        });
+        await bulkUpdateTransactionCategory(
+          Array.from(selectedIds),
+          selectedCategoryId,
+          true
+        );
       }
 
       onComplete(totalCount);
@@ -126,12 +139,33 @@ export function BatchCategoryAssigner({
   };
 
   const totalSelected = 1 + selectedIds.size;
-  const isLoading = similarTransactions === undefined;
-  const hasSimilar =
-    similarTransactions && similarTransactions.length > 0;
+  const hasSimilar = similarTransactions && similarTransactions.length > 0;
 
   // Determine layout: single column if no similar transactions
   const showTwoColumns = isLoading || hasSimilar;
+
+  // Transform categories to match the expected format for CategoryPicker
+  const transformedCategories = categories.map((c) => ({
+    id: c.id,
+    name: c.name,
+    type: c.type,
+    isEssential: c.isEssential,
+    color: c.color,
+  }));
+
+  // Transform similar transactions to match the expected format for SimilarTransactionsList
+  const transformedSimilar = similarTransactions?.map((t) => ({
+    id: t.id,
+    description: t.description,
+    amount: t.amount,
+    date: t.date,
+    similarityScore: t.similarityScore,
+    matchLevel: t.matchLevel,
+    account: t.account,
+  }));
+
+  // Pass selectedIds directly
+  const transformedSelectedIds = selectedIds;
 
   return (
     <div
@@ -141,10 +175,7 @@ export function BatchCategoryAssigner({
     >
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-        <h2
-          id="batch-assigner-title"
-          className="text-sm font-semibold"
-        >
+        <h2 id="batch-assigner-title" className="text-sm font-semibold">
           Categorize Transaction
         </h2>
         <button
@@ -189,20 +220,15 @@ export function BatchCategoryAssigner({
         )}
       >
         {/* Left panel - Category picker */}
-        <div
-          className={cn(
-            "flex flex-col p-4",
-            showTwoColumns ? "" : "w-full"
-          )}
-        >
+        <div className={cn("flex flex-col p-4", showTwoColumns ? "" : "w-full")}>
           <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1 pb-3">
             Choose Category
           </h3>
           <div className="flex-1 overflow-y-auto -mx-1">
             <CategoryPicker
-              categories={categories}
+              categories={transformedCategories}
               selectedId={selectedCategoryId}
-              onSelect={setSelectedCategoryId}
+              onSelect={(id) => setSelectedCategoryId(id)}
             />
           </div>
         </div>
@@ -211,9 +237,9 @@ export function BatchCategoryAssigner({
         {showTwoColumns && (
           <div className="flex flex-col p-4 min-h-[280px]">
             <SimilarTransactionsList
-              transactions={similarTransactions}
-              selectedIds={selectedIds}
-              onToggle={handleToggle}
+              transactions={transformedSimilar}
+              selectedIds={transformedSelectedIds}
+              onToggle={(id) => handleToggle(id)}
               onToggleAll={handleToggleAll}
               isLoading={isLoading}
             />

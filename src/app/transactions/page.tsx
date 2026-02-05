@@ -1,12 +1,17 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef, Suspense } from "react";
-import { useQuery } from "convex/react";
+import { useState, useEffect, useMemo, useRef, Suspense, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { format, parseISO, startOfDay, endOfDay } from "date-fns";
 import { DateRange } from "react-day-picker";
-import { api } from "../../../convex/_generated/api";
-import { Id } from "../../../convex/_generated/dataModel";
+import {
+  fetchTransactions,
+  fetchAccounts,
+  fetchCategories,
+} from "@/app/actions/data";
+import type { ListTransactionsArgs } from "@/db/queries/transactions";
+import type { Account } from "@/db/queries/accounts";
+import type { Category } from "@/db/queries/categories";
 import { Sidebar } from "@/components/layout/Sidebar";
 import {
   Card,
@@ -110,13 +115,16 @@ const STATUS_OPTIONS: MultiSelectOption<StatusFilter>[] = [
   },
 ];
 
+// Type for transaction data from the query
+type TransactionData = Awaited<ReturnType<typeof fetchTransactions>>;
+
 function TransactionsPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
   // Check for import mode from URL params
   const importParam = searchParams.get("import");
-  const accountIdParam = searchParams.get("accountId") as Id<"accounts"> | null;
+  const accountIdParam = searchParams.get("accountId");
 
   // Date range and category from URL params
   const startDateParam = searchParams.get("startDate");
@@ -128,20 +136,19 @@ function TransactionsPageContent() {
     val === "uncategorized" || val === "flagged" || val === "linked";
   const statusFromParam = isStatusFilter(categoryIdParamRaw) ? categoryIdParamRaw : null;
 
-  // Validate category ID looks like a valid Convex ID (not a word like "uncategorized")
-  // Convex IDs contain a mix of letters and numbers, so require at least one digit
-  const isValidConvexId = (id: string | null): id is string =>
-    id !== null && id.length >= 10 && /^[a-z0-9]+$/i.test(id) && /\d/.test(id);
-  const categoryIdParam = isValidConvexId(categoryIdParamRaw)
-    ? (categoryIdParamRaw as Id<"categories">)
+  // Validate category ID looks like a valid UUID (not a word like "uncategorized")
+  const isValidUUID = (id: string | null): id is string =>
+    id !== null && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+  const categoryIdParam = isValidUUID(categoryIdParamRaw)
+    ? categoryIdParamRaw
     : null;
 
   const [showImportWizard, setShowImportWizard] = useState(importParam === "true");
-  const [importAccountId, setImportAccountId] = useState<Id<"accounts"> | undefined>(
+  const [importAccountId, setImportAccountId] = useState<string | undefined>(
     accountIdParam || undefined
   );
   const [page, setPage] = useState(0);
-  const [selectedAccountIds, setSelectedAccountIds] = useState<Id<"accounts">[]>([]);
+  const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   // Initialize status filter from URL param if present
   const [selectedStatuses, setSelectedStatuses] = useState<StatusFilter[]>(
@@ -155,7 +162,13 @@ function TransactionsPageContent() {
   );
   const [sortBy, setSortBy] = useState<"date" | "amount" | "category">("date");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
-  const [selectedCategoryIds, setSelectedCategoryIds] = useState<Id<"categories">[]>([]);
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
+
+  // Data state
+  const [transactions, setTransactions] = useState<TransactionData | null>(null);
+  const [accounts, setAccounts] = useState<Account[] | null>(null);
+  const [categories, setCategories] = useState<Category[] | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Debounce search query for performance
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
@@ -287,33 +300,70 @@ function TransactionsPageContent() {
   const showUncategorizedOnly = selectedStatuses.includes("uncategorized");
   const showLinkedOnly = selectedStatuses.includes("linked");
 
-  const transactions = useQuery(api.transactions.queries.list, {
-    accountIds: selectedAccountIds.length > 0 ? selectedAccountIds : undefined,
-    flaggedOnly: showFlaggedOnly || undefined,
-    uncategorizedOnly: showUncategorizedOnly || undefined,
-    linkedOnly: showLinkedOnly || undefined,
-    searchQuery: debouncedSearchQuery || undefined,
-    categoryId: filterCategoryId,
-    categoryIds: selectedCategoryIds.length > 0 ? selectedCategoryIds : undefined,
-    startDate: startDateTimestamp,
-    endDate: endDateTimestamp,
-    limit: pageSize,
-    offset: page * pageSize,
+  // Load accounts and categories on mount
+  useEffect(() => {
+    const loadStaticData = async () => {
+      const [accountsData, categoriesData] = await Promise.all([
+        fetchAccounts(true),
+        fetchCategories(),
+      ]);
+      setAccounts(accountsData);
+      setCategories(categoriesData);
+    };
+    loadStaticData();
+  }, []);
+
+  // Load transactions when filters change
+  const loadTransactions = useCallback(async () => {
+    setIsLoading(true);
+    const args: ListTransactionsArgs = {
+      accountIds: selectedAccountIds.length > 0 ? selectedAccountIds : undefined,
+      flaggedOnly: showFlaggedOnly || undefined,
+      uncategorizedOnly: showUncategorizedOnly || undefined,
+      linkedOnly: showLinkedOnly || undefined,
+      searchQuery: debouncedSearchQuery || undefined,
+      categoryId: filterCategoryId,
+      categoryIds: selectedCategoryIds.length > 0 ? selectedCategoryIds : undefined,
+      startDate: startDateTimestamp,
+      endDate: endDateTimestamp,
+      limit: pageSize,
+      offset: page * pageSize,
+      sortBy,
+      sortOrder,
+    };
+    const data = await fetchTransactions(args);
+    setTransactions(data);
+    setIsLoading(false);
+  }, [
+    selectedAccountIds,
+    showFlaggedOnly,
+    showUncategorizedOnly,
+    showLinkedOnly,
+    debouncedSearchQuery,
+    filterCategoryId,
+    selectedCategoryIds,
+    startDateTimestamp,
+    endDateTimestamp,
+    page,
     sortBy,
     sortOrder,
-  });
+  ]);
 
-  const accounts = useQuery(api.accounts.queries.list, { activeOnly: true });
-  const categories = useQuery(api.categories.queries.list);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Data fetching on filter change is intentional
+    loadTransactions();
+  }, [loadTransactions]);
 
   // Get filtered category name for display
   const filteredCategory = filterCategoryId
-    ? categories?.find((c) => c._id === filterCategoryId)
+    ? categories?.find((c) => c.id === filterCategoryId)
     : null;
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const handleCategoryUpdateComplete = (_count: number) => {
     setEditingTransaction(null);
+    // Reload transactions to reflect the update
+    loadTransactions();
     // Could add a toast notification here showing "Updated {_count} transaction(s)"
   };
 
@@ -401,13 +451,13 @@ function TransactionsPageContent() {
                       options: accounts
                         .filter((acc) => group.types.includes(acc.type as AccountType))
                         .map((acc) => ({
-                          value: acc._id,
+                          value: acc.id,
                           label: acc.name,
                         })),
                     })).filter((group) => group.options.length > 0)}
                     value={selectedAccountIds}
                     onChange={(ids) => {
-                      setSelectedAccountIds(ids as Id<"accounts">[]);
+                      setSelectedAccountIds(ids as string[]);
                       setPage(0);
                     }}
                     placeholder="Accounts"
@@ -423,24 +473,24 @@ function TransactionsPageContent() {
                         label: "Expense",
                         options: categories
                           .filter((cat) => cat.type === "expense")
-                          .map((cat) => ({ value: cat._id, label: cat.name })),
+                          .map((cat) => ({ value: cat.id, label: cat.name })),
                       },
                       {
                         label: "Income",
                         options: categories
                           .filter((cat) => cat.type === "income")
-                          .map((cat) => ({ value: cat._id, label: cat.name })),
+                          .map((cat) => ({ value: cat.id, label: cat.name })),
                       },
                       {
                         label: "Transfer",
                         options: categories
                           .filter((cat) => cat.type === "transfer")
-                          .map((cat) => ({ value: cat._id, label: cat.name })),
+                          .map((cat) => ({ value: cat.id, label: cat.name })),
                       },
                     ].filter((group) => group.options.length > 0)}
                     value={selectedCategoryIds}
                     onChange={(ids) => {
-                      setSelectedCategoryIds(ids as Id<"categories">[]);
+                      setSelectedCategoryIds(ids as string[]);
                       setPage(0);
                     }}
                     placeholder="Categories"
@@ -675,7 +725,7 @@ function TransactionsPageContent() {
                     </TableHeader>
                     <TableBody>
                       {transactions.transactions.map((tx) => (
-                        <TableRow key={tx._id}>
+                        <TableRow key={tx.id}>
                           <TableCell className="font-mono text-sm">
                             {formatDate(tx.date)}
                           </TableCell>
@@ -687,7 +737,7 @@ function TransactionsPageContent() {
                           </TableCell>
                           <TableCell>
                             <button
-                              onClick={() => setEditingTransaction(tx._id)}
+                              onClick={() => setEditingTransaction(tx.id)}
                               className={cn(
                                 "text-sm px-2 py-1 rounded hover:bg-muted transition-colors",
                                 tx.isFlagged && "text-warning",
@@ -712,7 +762,7 @@ function TransactionsPageContent() {
                             <LinkStatusIndicator
                               isLinked={tx.hasLinkedTransaction}
                               linkedAccountName={tx.linkedAccountName}
-                              onClick={() => setLinkingTransaction(tx._id)}
+                              onClick={() => setLinkingTransaction(tx.id)}
                             />
                           </TableCell>
                           <TableCell>
@@ -755,11 +805,11 @@ function TransactionsPageContent() {
               ) : (
                 <div className="text-center py-12">
                   <p className="text-muted-foreground mb-4">
-                    {transactions
-                      ? "No transactions found"
-                      : "Loading transactions..."}
+                    {isLoading
+                      ? "Loading transactions..."
+                      : "No transactions found"}
                   </p>
-                  {transactions && (
+                  {!isLoading && transactions && (
                     <Button onClick={() => setShowImportWizard(true)}>
                       <Upload className="w-4 h-4 mr-2" />
                       Import your first CSV
@@ -774,7 +824,7 @@ function TransactionsPageContent() {
         {/* Category Assignment Dialog */}
         {(() => {
           const editingTx = transactions?.transactions.find(
-            (tx) => tx._id === editingTransaction
+            (tx) => tx.id === editingTransaction
           );
           return (
             <Dialog
@@ -797,14 +847,17 @@ function TransactionsPageContent() {
         {/* Link Transaction Dialog */}
         {(() => {
           const linkingTx = transactions?.transactions.find(
-            (tx) => tx._id === linkingTransaction
+            (tx) => tx.id === linkingTransaction
           );
           return linkingTx ? (
             <LinkTransactionDialog
               transaction={linkingTx}
               open={!!linkingTransaction}
               onClose={() => setLinkingTransaction(null)}
-              onLinkComplete={() => setLinkingTransaction(null)}
+              onLinkComplete={() => {
+                setLinkingTransaction(null);
+                loadTransactions();
+              }}
             />
           ) : null;
         })()}

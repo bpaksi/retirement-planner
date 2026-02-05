@@ -1,9 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
-import { Id } from "../../../convex/_generated/dataModel";
+import { useState, useEffect } from "react";
+import { fetchOneTimeEvents } from "@/app/actions/data";
+import type { OneTimeEvent } from "@/db/queries/oneTimeEvents";
+import {
+  createOneTimeEvent,
+  updateOneTimeEvent,
+  deleteOneTimeEvent,
+} from "@/app/actions/oneTimeEvents";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -25,16 +29,6 @@ import {
   TrendingUp,
   TrendingDown,
 } from "lucide-react";
-
-interface OneTimeEvent {
-  _id: Id<"oneTimeEvents">;
-  name: string;
-  year: number;
-  amount: number;
-  category?: string;
-  notes?: string;
-  createdAt: number;
-}
 
 const CATEGORIES = [
   { value: "travel", label: "Travel" },
@@ -68,16 +62,25 @@ const initialFormData: FormData = {
 
 export function OneTimeEventsList() {
   const [showDialog, setShowDialog] = useState(false);
-  const [editingId, setEditingId] = useState<Id<"oneTimeEvents"> | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<FormData>(initialFormData);
   const [isSaving, setIsSaving] = useState(false);
+  const [events, setEvents] = useState<OneTimeEvent[] | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const events = useQuery(api.oneTimeEvents.queries.list);
-  const createEvent = useMutation(api.oneTimeEvents.mutations.create);
-  const updateEvent = useMutation(api.oneTimeEvents.mutations.update);
-  const removeEvent = useMutation(api.oneTimeEvents.mutations.remove);
+  const loadData = async () => {
+    setIsLoading(true);
+    try {
+      const data = await fetchOneTimeEvents();
+      setEvents(data);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-  const isLoading = events === undefined;
+  useEffect(() => {
+    loadData();
+  }, []);
 
   const openCreateDialog = () => {
     setEditingId(null);
@@ -86,7 +89,7 @@ export function OneTimeEventsList() {
   };
 
   const openEditDialog = (event: OneTimeEvent) => {
-    setEditingId(event._id);
+    setEditingId(event.id);
     setFormData({
       name: event.name,
       year: event.year.toString(),
@@ -111,20 +114,22 @@ export function OneTimeEventsList() {
       };
 
       if (editingId) {
-        await updateEvent({ id: editingId, ...data });
+        await updateOneTimeEvent({ id: editingId, ...data });
       } else {
-        await createEvent(data);
+        await createOneTimeEvent(data);
       }
 
       setShowDialog(false);
+      await loadData();
     } finally {
       setIsSaving(false);
     }
   };
 
-  const handleDelete = async (id: Id<"oneTimeEvents">) => {
+  const handleDelete = async (id: string) => {
     if (confirm("Are you sure you want to delete this event?")) {
-      await removeEvent({ id });
+      await deleteOneTimeEvent(id);
+      await loadData();
     }
   };
 
@@ -190,7 +195,7 @@ export function OneTimeEventsList() {
                       <div className="space-y-2">
                         {yearEvents.map((event) => (
                           <div
-                            key={event._id}
+                            key={event.id}
                             className="flex items-center justify-between p-3 rounded-lg bg-muted/50"
                           >
                             <div className="flex items-center gap-3">
@@ -242,7 +247,7 @@ export function OneTimeEventsList() {
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  onClick={() => handleDelete(event._id)}
+                                  onClick={() => handleDelete(event.id)}
                                 >
                                   <Trash2 className="w-4 h-4 text-destructive" />
                                 </Button>

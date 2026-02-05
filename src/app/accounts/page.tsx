@@ -1,10 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { useQuery, useMutation } from "convex/react";
 import { useRouter } from "next/navigation";
-import { api } from "../../../convex/_generated/api";
-import { Id } from "../../../convex/_generated/dataModel";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -34,6 +31,22 @@ import {
   Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  createAccount,
+  updateAccount,
+  archiveAccount,
+  deleteAccount,
+} from "@/app/actions/accounts";
+import {
+  createLiability,
+  updateLiability,
+} from "@/app/actions/liabilities";
+import { deleteTransactionsByAccount } from "@/app/actions/transactions";
+import {
+  fetchAccounts,
+  fetchTransactionCountByAccount,
+  fetchLiabilityByAccount,
+} from "@/app/actions/data";
 
 type AccountType =
   | "401k"
@@ -212,20 +225,24 @@ function DropdownMenuItem({
   );
 }
 
+// Type for account from database
+type Account = Awaited<ReturnType<typeof fetchAccounts>>[number];
+
 export default function AccountsPage() {
   const router = useRouter();
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [editingAccount, setEditingAccount] = useState<{
-    id: Id<"accounts">;
+    id: string;
     type: AccountType;
   } | null>(null);
   const [deleteDialogAccount, setDeleteDialogAccount] = useState<{
-    id: Id<"accounts">;
+    id: string;
     name: string;
   } | null>(null);
   const [deleteTransactionsDialogAccount, setDeleteTransactionsDialogAccount] =
     useState<{
-      id: Id<"accounts">;
+      id: string;
       name: string;
     } | null>(null);
   const [formData, setFormData] = useState({
@@ -244,47 +261,86 @@ export default function AccountsPage() {
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [transactionCount, setTransactionCount] = useState<number | undefined>(undefined);
+  const [transactionCountForDelete, setTransactionCountForDelete] = useState<number | undefined>(undefined);
+  const [linkedLiability, setLinkedLiability] = useState<Awaited<ReturnType<typeof fetchLiabilityByAccount>> | null>(null);
 
-  const handleImportForAccount = (accountId: Id<"accounts">) => {
-    router.push(`/transactions?import=true&accountId=${accountId}`);
+  // Load accounts on mount and when data changes
+  const loadAccounts = async () => {
+    const data = await fetchAccounts();
+    setAccounts(data);
   };
 
-  const accounts = useQuery(api.accounts.queries.list, {});
-  const createAccount = useMutation(api.accounts.mutations.create);
-  const updateAccount = useMutation(api.accounts.mutations.update);
-  const createLiability = useMutation(api.liabilities.mutations.create);
-  const updateLiability = useMutation(api.liabilities.mutations.update);
-  const archiveAccount = useMutation(api.accounts.mutations.archive);
-  const removeAccount = useMutation(api.accounts.mutations.remove);
-  const removeTransactionsByAccount = useMutation(
-    api.transactions.mutations.removeByAccount
-  );
+  useEffect(() => {
+    loadAccounts();
+  }, []);
 
-  // Get linked liability for editing loan accounts
-  const linkedLiability = useQuery(
-    api.liabilities.queries.getByAccount,
-    editingAccount ? { accountId: editingAccount.id } : "skip"
-  );
+  // Load transaction count for delete dialog
+  useEffect(() => {
+    const loadCount = async () => {
+      if (deleteDialogAccount) {
+        const count = await fetchTransactionCountByAccount(deleteDialogAccount.id);
+        setTransactionCount(count);
+      } else {
+        setTransactionCount(undefined);
+      }
+    };
+    loadCount();
+  }, [deleteDialogAccount]);
 
-  // Get transaction count for the account in delete dialog
-  const transactionCount = useQuery(
-    api.transactions.queries.countByAccount,
-    deleteDialogAccount ? { accountId: deleteDialogAccount.id } : "skip"
-  );
+  // Load transaction count for delete transactions dialog
+  useEffect(() => {
+    const loadCount = async () => {
+      if (deleteTransactionsDialogAccount) {
+        const count = await fetchTransactionCountByAccount(deleteTransactionsDialogAccount.id);
+        setTransactionCountForDelete(count);
+      } else {
+        setTransactionCountForDelete(undefined);
+      }
+    };
+    loadCount();
+  }, [deleteTransactionsDialogAccount]);
 
-  const transactionCountForDelete = useQuery(
-    api.transactions.queries.countByAccount,
-    deleteTransactionsDialogAccount
-      ? { accountId: deleteTransactionsDialogAccount.id }
-      : "skip"
-  );
+  // Load linked liability for edit dialog
+  useEffect(() => {
+    const loadLiability = async () => {
+      if (editingAccount && isLoanAccount(editingAccount.type)) {
+        const liability = await fetchLiabilityByAccount(editingAccount.id);
+        setLinkedLiability(liability);
+        if (liability) {
+          setFormData((prev) => ({
+            ...prev,
+            originalAmount: liability.originalAmount?.toString() ?? "",
+            interestRate: liability.interestRate
+              ? (liability.interestRate * 100).toString()
+              : "",
+            termYears: liability.termMonths
+              ? (liability.termMonths / 12).toString()
+              : "",
+            startDate: liability.startDate
+              ? new Date(liability.startDate).toISOString().split("T")[0]
+              : "",
+            currentBalance: liability.currentBalance?.toString() ?? "",
+          }));
+        }
+      } else {
+        setLinkedLiability(null);
+      }
+    };
+    loadLiability();
+  }, [editingAccount]);
+
+  const handleImportForAccount = (accountId: string) => {
+    router.push(`/transactions?import=true&accountId=${accountId}`);
+  };
 
   const handleDeleteAccount = async () => {
     if (!deleteDialogAccount) return;
     setIsDeleting(true);
     try {
-      await removeAccount({ id: deleteDialogAccount.id });
+      await deleteAccount(deleteDialogAccount.id);
       setDeleteDialogAccount(null);
+      loadAccounts();
     } catch (error) {
       console.error("Failed to delete account:", error);
     } finally {
@@ -296,9 +352,7 @@ export default function AccountsPage() {
     if (!deleteTransactionsDialogAccount) return;
     setIsDeleting(true);
     try {
-      await removeTransactionsByAccount({
-        accountId: deleteTransactionsDialogAccount.id,
-      });
+      await deleteTransactionsByAccount(deleteTransactionsDialogAccount.id);
       setDeleteTransactionsDialogAccount(null);
     } catch (error) {
       console.error("Failed to delete transactions:", error);
@@ -307,9 +361,10 @@ export default function AccountsPage() {
     }
   };
 
-  const handleArchiveAccount = async (id: Id<"accounts">) => {
+  const handleArchiveAccount = async (id: string) => {
     try {
-      await archiveAccount({ id });
+      await archiveAccount(id);
+      loadAccounts();
     } catch (error) {
       console.error("Failed to archive account:", error);
     }
@@ -323,7 +378,7 @@ export default function AccountsPage() {
     });
   };
 
-  const openEditDialog = (account: NonNullable<typeof accounts>[number]) => {
+  const openEditDialog = (account: Account) => {
     setFormData({
       name: account.name,
       type: account.type as AccountType,
@@ -338,28 +393,8 @@ export default function AccountsPage() {
       startDate: "",
       currentBalance: "",
     });
-    setEditingAccount({ id: account._id, type: account.type as AccountType });
+    setEditingAccount({ id: account.id, type: account.type as AccountType });
   };
-
-  // Populate loan fields when linkedLiability loads
-  useEffect(() => {
-    if (editingAccount && linkedLiability && isLoanAccount(editingAccount.type)) {
-      setFormData((prev) => ({
-        ...prev,
-        originalAmount: linkedLiability.originalAmount?.toString() ?? "",
-        interestRate: linkedLiability.interestRate
-          ? (linkedLiability.interestRate * 100).toString()
-          : "",
-        termYears: linkedLiability.termMonths
-          ? (linkedLiability.termMonths / 12).toString()
-          : "",
-        startDate: linkedLiability.startDate
-          ? new Date(linkedLiability.startDate).toISOString().split("T")[0]
-          : "",
-        currentBalance: linkedLiability.currentBalance?.toString() ?? "",
-      }));
-    }
-  }, [editingAccount, linkedLiability]);
 
   const closeEditDialog = () => {
     setEditingAccount(null);
@@ -384,7 +419,7 @@ export default function AccountsPage() {
 
     setIsSubmitting(true);
     try {
-      const accountId = await createAccount({
+      const account = await createAccount({
         name: formData.name,
         type: formData.type,
         institution: formData.institution,
@@ -406,6 +441,15 @@ export default function AccountsPage() {
           ? parseFloat(formData.currentBalance)
           : originalAmount;
 
+        // Calculate minimum payment using standard amortization formula
+        const monthlyRate = interestRate / 12;
+        let minimumPayment: number;
+        if (monthlyRate > 0 && termMonths > 0) {
+          minimumPayment = originalAmount * (monthlyRate * Math.pow(1 + monthlyRate, termMonths)) / (Math.pow(1 + monthlyRate, termMonths) - 1);
+        } else {
+          minimumPayment = originalAmount / termMonths;
+        }
+
         await createLiability({
           type: getLiabilityType(formData.type),
           name: formData.name,
@@ -414,7 +458,8 @@ export default function AccountsPage() {
           interestRate,
           termMonths,
           startDate,
-          linkedAccountId: accountId,
+          linkedAccountId: account.id,
+          minimumPayment: Math.round(minimumPayment * 100) / 100,
         });
       }
 
@@ -432,6 +477,7 @@ export default function AccountsPage() {
         startDate: "",
         currentBalance: "",
       });
+      loadAccounts();
     } catch (error) {
       console.error("Failed to create account:", error);
     } finally {
@@ -463,7 +509,7 @@ export default function AccountsPage() {
           : undefined;
 
         await updateLiability({
-          id: linkedLiability._id,
+          id: linkedLiability.id,
           name: formData.name,
           originalAmount: formData.originalAmount
             ? parseFloat(formData.originalAmount)
@@ -478,6 +524,7 @@ export default function AccountsPage() {
       }
 
       closeEditDialog();
+      loadAccounts();
     } catch (error) {
       console.error("Failed to update account:", error);
     } finally {
@@ -517,7 +564,7 @@ export default function AccountsPage() {
                 const Icon = accountType?.icon ?? Wallet;
 
                 return (
-                  <Card key={account._id}>
+                  <Card key={account.id}>
                     <CardContent className="pt-6">
                       <div className="flex items-start gap-4">
                         <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
@@ -558,7 +605,7 @@ export default function AccountsPage() {
                             Edit Account
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                            onClick={() => handleImportForAccount(account._id)}
+                            onClick={() => handleImportForAccount(account.id)}
                           >
                             <Upload className="h-4 w-4" />
                             Import Transactions
@@ -566,7 +613,7 @@ export default function AccountsPage() {
                           <DropdownMenuItem
                             onClick={() =>
                               setDeleteTransactionsDialogAccount({
-                                id: account._id,
+                                id: account.id,
                                 name: account.name,
                               })
                             }
@@ -575,7 +622,7 @@ export default function AccountsPage() {
                             Delete Transactions
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                            onClick={() => handleArchiveAccount(account._id)}
+                            onClick={() => handleArchiveAccount(account.id)}
                           >
                             <Archive className="h-4 w-4" />
                             Archive
@@ -584,7 +631,7 @@ export default function AccountsPage() {
                             variant="destructive"
                             onClick={() =>
                               setDeleteDialogAccount({
-                                id: account._id,
+                                id: account.id,
                                 name: account.name,
                               })
                             }
@@ -633,7 +680,7 @@ export default function AccountsPage() {
                   const Icon = accountType?.icon ?? Wallet;
 
                   return (
-                    <Card key={account._id} className="opacity-60">
+                    <Card key={account.id} className="opacity-60">
                       <CardContent className="pt-6">
                         <div className="flex items-start gap-4">
                           <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center flex-shrink-0">

@@ -1,12 +1,9 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
-import { useQuery, useAction } from "convex/react";
-import { api } from "../../../convex/_generated/api";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { ProjectionChart } from "@/components/projections/ProjectionChart";
-import { GuardrailsChart } from "@/components/projections/GuardrailsChart";
 import { MonteCarloChart, MonteCarloChartLegend } from "@/components/monteCarlo/MonteCarloChart";
 import { MonteCarloSummary } from "@/components/monteCarlo/MonteCarloSummary";
 import { FailureAnalysis } from "@/components/monteCarlo/FailureAnalysis";
@@ -32,22 +29,180 @@ import {
   CheckCircle2,
 } from "lucide-react";
 
+// Import server actions
+import {
+  fetchSimulationInputs,
+  fetchAssumptionsWithDefaults,
+  fetchGuardrailsConfig,
+  fetchRetirementProfile,
+  fetchAnnualBudgets,
+  fetchNetWorthData,
+} from "@/app/actions/data";
+
+// Import actions
+import { runSimulation, findMaxSafeWithdrawal } from "@/app/actions/monteCarlo";
+
+// Import types
+import type { AggregatedResults, MaxWithdrawalResult } from "@/lib/calculations/monteCarlo";
+
+// Default guardrails values
+const GUARDRAILS_DEFAULTS = {
+  isEnabled: false,
+  upperThresholdPercent: 0.2,
+  lowerThresholdPercent: 0.2,
+  spendingAdjustmentPercent: 0.1,
+  strategyType: "percentage" as const,
+};
+
+// Type for guardrails config with defaults
+interface GuardrailsConfigWithDefaults {
+  isEnabled: boolean;
+  upperThresholdPercent: number;
+  lowerThresholdPercent: number;
+  spendingAdjustmentPercent: number;
+  strategyType: "percentage" | "fixed";
+  spendingFloor?: number | null;
+  spendingCeiling?: number | null;
+  fixedAdjustmentAmount?: number | null;
+}
+
+// Type for spending breakdown
+interface SpendingBreakdown {
+  baseLivingExpense: number;
+  monthlyBaseLivingExpense: number;
+  totalGoalsAmount: number;
+  essentialFloor: number;
+  discretionaryAmount: number;
+  totalAnnualSpending: number;
+  goals: Array<{
+    id: string;
+    name: string;
+    annualAmount: number;
+    isEssential: boolean;
+  }>;
+}
+
+// Type for projection inputs
+interface ProjectionInputs {
+  profile: Awaited<ReturnType<typeof fetchRetirementProfile>>;
+  currentNetWorth: number;
+  portfolioValue: number;
+  investments: number;
+  cash: number;
+  assets: number;
+  liabilities: number;
+}
+
+// Type for simulation inputs
+type SimulationInputsType = Awaited<ReturnType<typeof fetchSimulationInputs>>;
+type MonteCarloAssumptionsType = Awaited<ReturnType<typeof fetchAssumptionsWithDefaults>>;
+
+// Extended simulation result type with cache info
+// Note: The action returns cachedAt when results are from cache
+interface SimulationResultWithCache extends AggregatedResults {
+  cachedAt?: number;
+}
+
+// Extended max withdrawal result
+interface MaxWithdrawalResultExtended extends MaxWithdrawalResult {
+  comparison?: {
+    currentSpending: number;
+    difference: number;
+    percentDifference: number;
+    canAffordCurrentSpending: boolean;
+  };
+}
+
 export function ResultsComparisonDashboard() {
   const [isRunning, setIsRunning] = useState(false);
   const [runningStatus, setRunningStatus] = useState<string>("");
-  const [simulationResult, setSimulationResult] = useState<Awaited<
-    ReturnType<typeof runSimulation>
-  > | null>(null);
-  const [maxWithdrawalResult, setMaxWithdrawalResult] = useState<Awaited<
-    ReturnType<typeof findMaxWithdrawal>
-  > | null>(null);
+  const [simulationResult, setSimulationResult] = useState<SimulationResultWithCache | null>(null);
+  const [maxWithdrawalResult, setMaxWithdrawalResult] = useState<MaxWithdrawalResultExtended | null>(null);
 
-  // Queries
-  const projectionInputs = useQuery(api.projections.queries.getProjectionInputs);
-  const guardrailsConfig = useQuery(api.guardrails.queries.getWithDefaults);
-  const monteCarloAssumptions = useQuery(api.monteCarlo.queries.getAssumptionsWithDefaults);
-  const simulationInputs = useQuery(api.monteCarlo.queries.getSimulationInputs);
-  const spendingBreakdown = useQuery(api.projections.queries.getSpendingBreakdown);
+  // Data loading state
+  const [isLoading, setIsLoading] = useState(true);
+  const [projectionInputs, setProjectionInputs] = useState<ProjectionInputs | null>(null);
+  const [guardrailsConfig, setGuardrailsConfig] = useState<GuardrailsConfigWithDefaults | null>(null);
+  const [monteCarloAssumptions, setMonteCarloAssumptions] = useState<MonteCarloAssumptionsType | null>(null);
+  const [simulationInputs, setSimulationInputs] = useState<SimulationInputsType | null>(null);
+  const [spendingBreakdown, setSpendingBreakdown] = useState<SpendingBreakdown | null>(null);
+
+  // Load all data
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const [profile, guardrails, assumptions, simInputs, budgets, netWorthData] = await Promise.all([
+        fetchRetirementProfile(),
+        fetchGuardrailsConfig(),
+        fetchAssumptionsWithDefaults(),
+        fetchSimulationInputs(),
+        fetchAnnualBudgets(),
+        fetchNetWorthData(),
+      ]);
+
+      setProjectionInputs({
+        profile,
+        currentNetWorth: netWorthData.netWorth,
+        portfolioValue: netWorthData.portfolioValue,
+        investments: netWorthData.investments,
+        cash: netWorthData.cash,
+        assets: netWorthData.assets,
+        liabilities: netWorthData.liabilities,
+      });
+
+      // Set guardrails config with defaults
+      const guardrailsWithDefaults: GuardrailsConfigWithDefaults = guardrails
+        ? {
+            isEnabled: guardrails.isEnabled,
+            upperThresholdPercent: guardrails.upperThresholdPercent,
+            lowerThresholdPercent: guardrails.lowerThresholdPercent,
+            spendingAdjustmentPercent: guardrails.spendingAdjustmentPercent,
+            strategyType: guardrails.strategyType,
+            spendingFloor: guardrails.spendingFloor,
+            spendingCeiling: guardrails.spendingCeiling,
+            fixedAdjustmentAmount: guardrails.fixedAdjustmentAmount,
+          }
+        : GUARDRAILS_DEFAULTS;
+
+      setGuardrailsConfig(guardrailsWithDefaults);
+      setMonteCarloAssumptions(assumptions);
+      setSimulationInputs(simInputs);
+
+      // Calculate spending breakdown
+      const baseLivingExpense = profile?.monthlyBaseLivingExpense
+        ? profile.monthlyBaseLivingExpense * 12
+        : profile?.annualSpending ?? 0;
+      const monthlyBase = profile?.monthlyBaseLivingExpense ?? baseLivingExpense / 12;
+
+      const totalGoalsAmount = budgets.reduce((sum, b) => sum + b.annualAmount, 0);
+      const essentialGoalsAmount = budgets
+        .filter((b) => b.isEssential)
+        .reduce((sum, b) => sum + b.annualAmount, 0);
+
+      setSpendingBreakdown({
+        baseLivingExpense,
+        monthlyBaseLivingExpense: monthlyBase,
+        totalGoalsAmount,
+        essentialFloor: baseLivingExpense + essentialGoalsAmount,
+        discretionaryAmount: totalGoalsAmount - essentialGoalsAmount,
+        totalAnnualSpending: baseLivingExpense + totalGoalsAmount,
+        goals: budgets.map((b) => ({
+          id: b.id,
+          name: b.name,
+          annualAmount: b.annualAmount,
+          isEssential: b.isEssential ?? false,
+        })),
+      });
+    } catch (error) {
+      console.error("Failed to load dashboard data:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   // Calculate retirement age
   const retirementAge = useMemo(() => {
@@ -57,23 +212,6 @@ export function ResultsComparisonDashboard() {
       projectionInputs.profile.currentAge
     );
   }, [projectionInputs?.profile]);
-
-  // Guardrails projection query
-  const guardrailsProjection = useQuery(
-    api.projections.queries.calculateProjectionWithGuardrails,
-    projectionInputs?.profile && retirementAge
-      ? {
-          currentNetWorth: projectionInputs.currentNetWorth,
-          annualSpending: projectionInputs.profile.annualSpending,
-          currentAge: projectionInputs.profile.currentAge,
-          retirementAge: retirementAge,
-        }
-      : "skip"
-  );
-
-  // Actions
-  const runSimulation = useAction(api.monteCarlo.actions.runSimulation);
-  const findMaxWithdrawal = useAction(api.monteCarlo.actions.findMaxSustainableWithdrawal);
 
   // Calculate standard projection
   const standardProjection = useMemo(() => {
@@ -88,26 +226,40 @@ export function ResultsComparisonDashboard() {
   }, [projectionInputs, retirementAge]);
 
   // Run all simulations
-  const handleRunAllSimulations = useCallback(async (skipCache = false) => {
+  const handleRunAllSimulations = useCallback(async () => {
     setIsRunning(true);
     setRunningStatus("Running Monte Carlo simulation...");
 
     try {
       // Run Monte Carlo simulation
-      const simResult = await runSimulation({ iterations: 1000, skipCache });
-      setSimulationResult(simResult);
+      const simResult = await runSimulation();
+      setSimulationResult(simResult as SimulationResultWithCache);
 
       // Find max withdrawal
       setRunningStatus("Calculating sustainable withdrawal...");
-      const maxResult = await findMaxWithdrawal({ skipCache });
-      setMaxWithdrawalResult(maxResult);
+      const maxResult = await findMaxSafeWithdrawal(monteCarloAssumptions?.targetSuccessRate ?? 0.9);
+
+      // Calculate comparison
+      const currentSpending = simulationInputs?.totalAnnualSpending ?? 0;
+      const maxResultWithComparison: MaxWithdrawalResultExtended = {
+        ...maxResult,
+        comparison: {
+          currentSpending,
+          difference: maxResult.maxWithdrawal - currentSpending,
+          percentDifference: currentSpending > 0
+            ? (maxResult.maxWithdrawal - currentSpending) / currentSpending
+            : 0,
+          canAffordCurrentSpending: maxResult.maxWithdrawal >= currentSpending,
+        },
+      };
+      setMaxWithdrawalResult(maxResultWithComparison);
     } catch (err) {
       console.error("Simulation failed:", err);
     } finally {
       setIsRunning(false);
       setRunningStatus("");
     }
-  }, [runSimulation, findMaxWithdrawal]);
+  }, [monteCarloAssumptions?.targetSuccessRate, simulationInputs?.totalAnnualSpending]);
 
   // Format cache time
   const formatCacheTime = (timestamp: number) => {
@@ -124,11 +276,12 @@ export function ResultsComparisonDashboard() {
 
   // Loading state
   if (
-    projectionInputs === undefined ||
-    guardrailsConfig === undefined ||
-    monteCarloAssumptions === undefined ||
-    simulationInputs === undefined ||
-    spendingBreakdown === undefined
+    isLoading ||
+    projectionInputs === null ||
+    guardrailsConfig === null ||
+    monteCarloAssumptions === null ||
+    simulationInputs === null ||
+    spendingBreakdown === null
   ) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -203,7 +356,7 @@ export function ResultsComparisonDashboard() {
         </CardContent>
       </Card>
 
-      {/* Spending Breakdown Card (NEW) */}
+      {/* Spending Breakdown Card */}
       <Card>
         <CardContent className="pt-6">
           <div className="flex items-center justify-between mb-4">
@@ -283,25 +436,23 @@ export function ResultsComparisonDashboard() {
         </Button>
         {simulationResult && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            {simulationResult.fromCache && simulationResult.cachedAt ? (
+            {simulationResult.cachedAt ? (
               <>
                 <Database className="w-4 h-4" />
                 <span>Last run: {formatCacheTime(simulationResult.cachedAt)}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleRunAllSimulations()}
+                  disabled={isRunning}
+                >
+                  <RefreshCw className="w-4 h-4" />
+                </Button>
               </>
             ) : (
               <span>
                 {simulationResult.iterations.toLocaleString()} simulations
               </span>
-            )}
-            {simulationResult.fromCache && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => handleRunAllSimulations(true)}
-                disabled={isRunning}
-              >
-                <RefreshCw className="w-4 h-4" />
-              </Button>
             )}
           </div>
         )}
@@ -357,7 +508,7 @@ export function ResultsComparisonDashboard() {
             label: "Success Rate",
             value: simulationResult
               ? formatPercent(simulationResult.successRate)
-              : "—",
+              : "--",
           }}
           secondaryMetrics={
             simulationResult && maxWithdrawalResult
@@ -369,7 +520,7 @@ export function ResultsComparisonDashboard() {
                   {
                     label: "Target",
                     value: simulationResult.successRate >= (monteCarloAssumptions.targetSuccessRate ?? 0.9)
-                      ? `✓ Meets ${formatPercent(monteCarloAssumptions.targetSuccessRate ?? 0.9, 0)}`
+                      ? `Meets ${formatPercent(monteCarloAssumptions.targetSuccessRate ?? 0.9, 0)}`
                       : `Below ${formatPercent(monteCarloAssumptions.targetSuccessRate ?? 0.9, 0)}`,
                   },
                 ]
@@ -396,13 +547,13 @@ export function ResultsComparisonDashboard() {
                 When portfolio exceeds +{Math.round(guardrailsConfig.upperThresholdPercent * 100)}%, spending increases.
                 When it falls -{Math.round(guardrailsConfig.lowerThresholdPercent * 100)}%, spending decreases (but never below the essential floor of {formatCurrency(spendingBreakdown.essentialFloor)}/yr).
               </p>
-              {simulationResult && (
+              {simulationResult && simulationResult.risk && 'guardrailTriggerStats' in simulationResult.risk && (
                 <div className="flex gap-4 mt-2 text-sm">
                   <span className="text-muted-foreground">
-                    Ceiling triggers: {Math.round(simulationResult.risk.guardrailTriggerStats.ceilingTriggerPercent * 100)}% of years
+                    Ceiling triggers: {Math.round((simulationResult.risk as { guardrailTriggerStats: { ceilingTriggerPercent: number } }).guardrailTriggerStats.ceilingTriggerPercent * 100)}% of years
                   </span>
                   <span className="text-muted-foreground">
-                    Floor triggers: {Math.round(simulationResult.risk.guardrailTriggerStats.floorTriggerPercent * 100)}% of years
+                    Floor triggers: {Math.round((simulationResult.risk as { guardrailTriggerStats: { floorTriggerPercent: number } }).guardrailTriggerStats.floorTriggerPercent * 100)}% of years
                   </span>
                 </div>
               )}
@@ -426,30 +577,6 @@ export function ResultsComparisonDashboard() {
           />
         </CardContent>
       </Card>
-
-      {/* Guardrails Deterministic Preview (if enabled) */}
-      {guardrailsConfig.isEnabled && guardrailsProjection?.isEnabled && guardrailsProjection.summary && (
-        <Card>
-          <CardContent className="pt-6">
-            <h3 className="font-medium mb-2 flex items-center gap-2">
-              Guardrails Preview
-              <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded">
-                Deterministic
-              </span>
-            </h3>
-            <p className="text-sm text-muted-foreground mb-4">
-              Expected spending adjustments with average returns. Monte Carlo above shows probabilistic outcomes across many market scenarios.
-            </p>
-            <GuardrailsChart
-              years={guardrailsProjection.years}
-              summary={guardrailsProjection.summary}
-              retirementAge={retirementAge}
-              currentAge={profile.currentAge}
-              lifeExpectancy={PROJECTION_DEFAULTS.lifeExpectancy}
-            />
-          </CardContent>
-        </Card>
-      )}
 
       {/* Monte Carlo Results */}
       {simulationResult && simulationInputs.isReady && (
@@ -475,12 +602,7 @@ export function ResultsComparisonDashboard() {
                 ? {
                     maxWithdrawal: maxWithdrawalResult.maxWithdrawal,
                     withdrawalRate: maxWithdrawalResult.withdrawalRate,
-                    comparison: maxWithdrawalResult.comparison as {
-                      currentSpending: number;
-                      difference: number;
-                      percentDifference: number;
-                      canAffordCurrentSpending: boolean;
-                    } | undefined,
+                    comparison: maxWithdrawalResult.comparison,
                   }
                 : undefined
             }
@@ -491,7 +613,7 @@ export function ResultsComparisonDashboard() {
           <Card>
             <CardContent className="pt-6">
               <h4 className="font-medium mb-4">Sample Portfolio Paths</h4>
-              {simulationResult.fromCache && samplePaths.length === 0 ? (
+              {simulationResult.cachedAt && samplePaths.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-center bg-muted/30 rounded-lg">
                   <Database className="w-8 h-8 text-muted-foreground mb-3" />
                   <p className="text-muted-foreground mb-2">
@@ -500,7 +622,7 @@ export function ResultsComparisonDashboard() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => handleRunAllSimulations(true)}
+                    onClick={() => handleRunAllSimulations()}
                     disabled={isRunning}
                   >
                     <RefreshCw className="w-4 h-4 mr-2" />

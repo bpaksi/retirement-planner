@@ -1,8 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
-import { useQuery, useAction } from "convex/react";
-import { api } from "../../../convex/_generated/api";
+import { useState, useCallback, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { MonteCarloSummary } from "./MonteCarloSummary";
@@ -20,42 +18,88 @@ import {
   ChevronUp,
   Database,
 } from "lucide-react";
+import {
+  fetchSimulationInputs,
+  fetchAssumptionsWithDefaults,
+} from "@/app/actions/data";
+import {
+  runSimulation,
+  runWhatIfSimulation,
+  findMaxSafeWithdrawal,
+} from "@/app/actions/monteCarlo";
+import type { AggregatedResults, MaxWithdrawalResult, YearResult } from "@/lib/calculations/monteCarlo";
+
+type SimulationInputs = Awaited<ReturnType<typeof fetchSimulationInputs>>;
+type Assumptions = Awaited<ReturnType<typeof fetchAssumptionsWithDefaults>>;
+
+// Extended result type that includes cache info
+interface SimulationResultWithCache extends AggregatedResults {
+  cachedAt?: number;
+  fromCache?: boolean;
+}
+
+// Extended YearResult type for the chart (adds workIncome for compatibility)
+interface ChartYearResult extends YearResult {
+  workIncome: number;
+}
 
 export function MonteCarloTab() {
   const [isRunning, setIsRunning] = useState(false);
   const [runningStatus, setRunningStatus] = useState<string>("");
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [simulationResult, setSimulationResult] = useState<Awaited<
-    ReturnType<typeof runSimulation>
-  > | null>(null);
-  const [maxWithdrawalResult, setMaxWithdrawalResult] = useState<Awaited<
-    ReturnType<typeof findMaxWithdrawal>
-  > | null>(null);
+  const [simulationResult, setSimulationResult] = useState<SimulationResultWithCache | null>(null);
+  const [maxWithdrawalResult, setMaxWithdrawalResult] = useState<MaxWithdrawalResult | null>(null);
 
-  // Queries
-  const simulationInputs = useQuery(api.monteCarlo.queries.getSimulationInputs);
-  const assumptions = useQuery(api.monteCarlo.queries.getAssumptionsWithDefaults);
+  // Local state for data loaded from database
+  const [simulationInputs, setSimulationInputs] = useState<SimulationInputs | null>(null);
+  const [assumptions, setAssumptions] = useState<Assumptions | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Actions
-  const runSimulation = useAction(api.monteCarlo.actions.runSimulation);
-  const findMaxWithdrawal = useAction(api.monteCarlo.actions.findMaxSustainableWithdrawal);
-  const runWhatIf = useAction(api.monteCarlo.actions.runWhatIfSimulation);
+  // Load data on mount
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const [inputs, assumptionsData] = await Promise.all([
+          fetchSimulationInputs(),
+          fetchAssumptionsWithDefaults(),
+        ]);
+        setSimulationInputs(inputs);
+        setAssumptions(assumptionsData);
+      } catch (err) {
+        console.error("Failed to load simulation inputs:", err);
+        setError("Failed to load simulation data");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    loadData();
+  }, []);
 
-  const handleRunSimulation = useCallback(async (skipCache = false) => {
+  const handleRunSimulation = useCallback(async () => {
     setIsRunning(true);
     setError(null);
     setRunningStatus("Running simulation...");
 
     try {
       // Run simulation first
-      const simResult = await runSimulation({ iterations: 1000, skipCache });
-      setSimulationResult(simResult);
+      const simResult = await runSimulation();
+      // Add fromCache flag based on presence of cachedAt
+      const resultWithCache: SimulationResultWithCache = {
+        ...simResult,
+        fromCache: !!simResult.cachedAt,
+      };
+      setSimulationResult(resultWithCache);
 
       // Then find max withdrawal
       setRunningStatus("Calculating sustainable withdrawal...");
-      const maxResult = await findMaxWithdrawal({ skipCache });
+      const targetSuccessRate = assumptions?.targetSuccessRate ?? 0.9;
+      const maxResult = await findMaxSafeWithdrawal(targetSuccessRate);
       setMaxWithdrawalResult(maxResult);
+
+      // Reload inputs in case they changed
+      const updatedInputs = await fetchSimulationInputs();
+      setSimulationInputs(updatedInputs);
     } catch (err) {
       console.error("Simulation failed:", err);
       const message = err instanceof Error ? err.message : "Simulation failed";
@@ -64,7 +108,7 @@ export function MonteCarloTab() {
       setIsRunning(false);
       setRunningStatus("");
     }
-  }, [runSimulation, findMaxWithdrawal]);
+  }, [assumptions?.targetSuccessRate]);
 
   // Helper to format cache time
   const formatCacheTime = (timestamp: number) => {
@@ -86,18 +130,52 @@ export function MonteCarloTab() {
       planToAge?: number;
       ssClaimingAge?: number;
       guardrailsEnabled?: boolean;
-    }) => {
-      const result = await runWhatIf(params);
+    }): Promise<{ successRate: number; changesFromBaseline: string[] }> => {
+      // Convert params to simulation overrides
+      const overrides: Parameters<typeof runWhatIfSimulation>[0] = {};
+
+      const changesFromBaseline: string[] = [];
+
+      if (params.annualSpending !== undefined && simulationInputs) {
+        overrides.annualSpending = params.annualSpending;
+        const diff = params.annualSpending - simulationInputs.annualSpending;
+        if (diff !== 0) {
+          changesFromBaseline.push(
+            `Spending ${diff > 0 ? "increased" : "decreased"} by $${Math.abs(diff).toLocaleString()}/year`
+          );
+        }
+      }
+      if (params.planToAge !== undefined && simulationInputs?.retirementAge) {
+        const newYears = params.planToAge - simulationInputs.retirementAge;
+        const oldYears = simulationInputs.planToAge - simulationInputs.retirementAge;
+        overrides.years = newYears;
+        if (newYears !== oldYears) {
+          changesFromBaseline.push(
+            `Planning horizon ${newYears > oldYears ? "extended" : "shortened"} by ${Math.abs(newYears - oldYears)} years`
+          );
+        }
+      }
+      if (params.retirementAge !== undefined && simulationInputs?.retirementAge) {
+        const diff = params.retirementAge - simulationInputs.retirementAge;
+        if (diff !== 0) {
+          changesFromBaseline.push(
+            `Retirement age ${diff > 0 ? "delayed" : "advanced"} by ${Math.abs(diff)} years`
+          );
+        }
+      }
+
+      const result = await runWhatIfSimulation(overrides);
+
       return {
         successRate: result.successRate,
-        changesFromBaseline: result.changesFromBaseline,
+        changesFromBaseline,
       };
     },
-    [runWhatIf]
+    [simulationInputs]
   );
 
   // Loading state
-  if (simulationInputs === undefined || assumptions === undefined) {
+  if (isLoading || simulationInputs === null || assumptions === null) {
     return (
       <div className="flex items-center justify-center py-24">
         <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
@@ -192,7 +270,16 @@ export function MonteCarloTab() {
   }
 
   // Results view
-  const samplePaths = simulationResult.samplePaths || [];
+  const rawSamplePaths = simulationResult.samplePaths || [];
+
+  // Transform sample paths to include workIncome (for chart compatibility)
+  const samplePaths: ChartYearResult[][] = rawSamplePaths.map((path) =>
+    path.map((year) => ({
+      ...year,
+      workIncome: 0, // Add default workIncome for chart compatibility
+    }))
+  );
+
   const successCount = samplePaths.filter(
     (p) => p.length > 0 && p[p.length - 1]?.endBalance > 0
   ).length;
@@ -241,7 +328,7 @@ export function MonteCarloTab() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => handleRunSimulation(true)}
+              onClick={() => handleRunSimulation()}
               disabled={isRunning}
               title="Run fresh simulation"
             >
@@ -256,7 +343,7 @@ export function MonteCarloTab() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => handleRunSimulation(true)}
+              onClick={() => handleRunSimulation()}
               disabled={isRunning}
             >
               {isRunning ? (
@@ -286,12 +373,6 @@ export function MonteCarloTab() {
         maxWithdrawal={maxWithdrawalResult ? {
           maxWithdrawal: maxWithdrawalResult.maxWithdrawal,
           withdrawalRate: maxWithdrawalResult.withdrawalRate,
-          comparison: maxWithdrawalResult.comparison as {
-            currentSpending: number;
-            difference: number;
-            percentDifference: number;
-            canAffordCurrentSpending: boolean;
-          } | undefined,
         } : undefined}
         targetSuccessRate={assumptions.targetSuccessRate}
       />
@@ -309,7 +390,7 @@ export function MonteCarloTab() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => handleRunSimulation(true)}
+                onClick={() => handleRunSimulation()}
                 disabled={isRunning}
               >
                 <RefreshCw className="w-4 h-4 mr-2" />

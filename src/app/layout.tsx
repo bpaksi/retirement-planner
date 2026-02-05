@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Inter, Geist_Mono } from "next/font/google";
-import { ConvexClientProvider } from "@/components/providers/ConvexClientProvider";
 import "./globals.css";
 
 const inter = Inter({
@@ -32,7 +31,7 @@ export default function RootLayout({
       <body
         className={`${inter.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
-        <ConvexClientProvider>{children}</ConvexClientProvider>
+        {children}
       </body>
     </html>
   );

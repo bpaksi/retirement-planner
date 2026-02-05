@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { Id } from "../../../convex/_generated/dataModel";
 import {
   Table,
   TableHeader,
@@ -18,8 +17,8 @@ import {
 import { ArrowUpDown, ArrowUp, ArrowDown, TrendingUp, TrendingDown } from "lucide-react";
 
 interface HoldingWithDetails {
-  _id: Id<"holdings">;
-  accountId: Id<"accounts">;
+  id: string;
+  accountId: string;
   symbol: string;
   name: string;
   shares: number;
@@ -28,7 +27,7 @@ interface HoldingWithDetails {
   lastPrice?: number;
   lastPriceUpdated?: number;
   account: {
-    _id: Id<"accounts">;
+    id: string;
     name: string;
     institution: string;
   } | null;
@@ -159,7 +158,7 @@ export function HoldingsTab({ holdings, showAccount = false }: HoldingsTabProps)
       </TableHeader>
       <TableBody>
         {sortedHoldings.map((holding) => (
-          <TableRow key={holding._id}>
+          <TableRow key={holding.id}>
             <TableCell className="font-mono text-sm font-medium">
               {holding.symbol}
             </TableCell>

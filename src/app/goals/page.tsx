@@ -1,7 +1,14 @@
 "use client";
 
-import { useQuery } from "convex/react";
-import { api } from "../../../convex/_generated/api";
+import { useState, useEffect } from "react";
+import {
+  fetchIncomeSources,
+  fetchOneTimeEvents,
+  fetchAnnualBudgets,
+} from "@/app/actions/data";
+import type { IncomeSource } from "@/db/queries/incomeSources";
+import type { OneTimeEvent } from "@/db/queries/oneTimeEvents";
+import type { AnnualBudget } from "@/db/queries/annualBudgets";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Card, CardContent } from "@/components/ui/Card";
 import { IncomeSourcesList } from "@/components/goals/IncomeSourcesList";
@@ -11,10 +18,25 @@ import { formatCurrency } from "@/lib/utils";
 import { DollarSign, Calendar, Wallet, Info } from "lucide-react";
 
 export default function GoalsPage() {
-  // Get summary data
-  const incomeSources = useQuery(api.incomeSources.queries.list);
-  const oneTimeEvents = useQuery(api.oneTimeEvents.queries.list);
-  const annualBudgets = useQuery(api.annualBudgets.queries.list);
+  const [incomeSources, setIncomeSources] = useState<IncomeSource[] | null>(null);
+  const [oneTimeEvents, setOneTimeEvents] = useState<OneTimeEvent[] | null>(null);
+  const [annualBudgets, setAnnualBudgets] = useState<AnnualBudget[] | null>(null);
+
+  useEffect(() => {
+    // Load data from SQLite via server actions
+    const loadData = async () => {
+      const [sources, events, budgets] = await Promise.all([
+        fetchIncomeSources(),
+        fetchOneTimeEvents(),
+        fetchAnnualBudgets(),
+      ]);
+      setIncomeSources(sources);
+      setOneTimeEvents(events);
+      setAnnualBudgets(budgets);
+    };
+
+    loadData();
+  }, []);
 
   // Calculate summaries
   const totalAnnualIncome =

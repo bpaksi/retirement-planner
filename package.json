@@ -7,12 +7,20 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "db:seed": "npx tsx src/db/seed.ts"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3", "esbuild"]
   },
   "dependencies": {
+    "better-sqlite3": "^12.6.2",
     "clsx": "^2.1.1",
-    "convex": "^1.31.7",
     "date-fns": "^4.1.0",
+    "drizzle-orm": "^0.45.1",
     "lucide-react": "^0.563.0",
     "next": "16.1.6",
     "papaparse": "^5.5.3",
@@ -25,11 +33,13 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
     "@types/papaparse": "^5.5.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "babel-plugin-react-compiler": "1.0.0",
+    "drizzle-kit": "^0.31.8",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
