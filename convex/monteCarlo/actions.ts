@@ -73,10 +73,17 @@ export const runSimulation = action({
     // Calculate years in retirement
     const years = inputs.planToAge - (inputs.retirementAge ?? 65);
 
-    // Build simulation input
+    // Build simulation input with spending breakdown
     const simulationInput: SimulationInput = {
       startingPortfolio: inputs.portfolioValue,
-      annualSpending: inputs.annualSpending,
+      // NEW: Use spending breakdown
+      baseLivingExpense: inputs.baseLivingExpense,
+      goals: inputs.goals?.map((g) => ({
+        annualAmount: g.annualAmount,
+        isEssential: g.isEssential,
+        startYear: g.startYear,
+        endYear: g.endYear,
+      })),
       years,
       realReturn: inputs.realReturn,
       volatility: inputs.volatility,
@@ -92,7 +99,9 @@ export const runSimulation = action({
             years: inputs.partTimeWork.years,
           }
         : undefined,
-      essentialFloor: inputs.essentialFloor,
+      // Use calculated essential floor (base + essential goals) or manual override
+      essentialFloor: inputs.simulationEssentialFloor,
+      spendingCeiling: inputs.spendingCeiling,
       guardrails: inputs.guardrails ?? undefined,
     };
 
@@ -112,11 +121,18 @@ export const runSimulation = action({
       },
     });
 
-    // Return results with input summary
+    // Return results with input summary (including spending breakdown)
     return {
       ...results,
       inputs: {
         portfolioValue: inputs.portfolioValue,
+        // Spending breakdown
+        baseLivingExpense: inputs.baseLivingExpense,
+        totalGoalsAmount: inputs.totalGoalsAmount,
+        essentialFloor: inputs.essentialFloor,
+        discretionaryAmount: inputs.discretionaryAmount,
+        totalAnnualSpending: inputs.totalAnnualSpending,
+        // Legacy
         annualSpending: inputs.annualSpending,
         years,
         realReturn: inputs.realReturn,
@@ -126,6 +142,7 @@ export const runSimulation = action({
         hasSocialSecurity: !!inputs.socialSecurity,
         hasGuardrails: !!inputs.guardrails,
         hasPartTimeWork: !!inputs.partTimeWork,
+        goalsCount: inputs.goals?.length ?? 0,
       },
       fromCache: false,
     };
@@ -188,8 +205,17 @@ export const findMaxSustainableWithdrawal = action({
     const years = inputs.planToAge - (inputs.retirementAge ?? 65);
 
     // Build base input (without spending - solver will find optimal)
+    // Note: For max withdrawal, we use baseLivingExpense as the starting point
+    // and let the solver find the maximum total spending
     const baseInput: Omit<SimulationInput, "annualSpending"> = {
       startingPortfolio: inputs.portfolioValue,
+      baseLivingExpense: inputs.baseLivingExpense,
+      goals: inputs.goals?.map((g) => ({
+        annualAmount: g.annualAmount,
+        isEssential: g.isEssential,
+        startYear: g.startYear,
+        endYear: g.endYear,
+      })),
       years,
       realReturn: inputs.realReturn,
       volatility: inputs.volatility,
@@ -205,7 +231,8 @@ export const findMaxSustainableWithdrawal = action({
             years: inputs.partTimeWork.years,
           }
         : undefined,
-      essentialFloor: inputs.essentialFloor,
+      essentialFloor: inputs.simulationEssentialFloor,
+      spendingCeiling: inputs.spendingCeiling,
       guardrails: inputs.guardrails ?? undefined,
     };
 
@@ -361,10 +388,24 @@ export const runWhatIfSimulation = action({
 
     const years = planToAge - retirementAge;
 
-    // Build simulation input
+    // Calculate effective base living expense for what-if
+    // If annualSpending override is provided, use it as base (no goals for what-if)
+    // Otherwise use the inputs breakdown
+    const baseLivingExpense = args.annualSpending ?? inputs.baseLivingExpense;
+    const goals = args.annualSpending
+      ? [] // Override means ignore goals
+      : inputs.goals?.map((g) => ({
+          annualAmount: g.annualAmount,
+          isEssential: g.isEssential,
+          startYear: g.startYear,
+          endYear: g.endYear,
+        }));
+
+    // Build simulation input with spending breakdown
     const simulationInput: SimulationInput = {
       startingPortfolio: inputs.portfolioValue,
-      annualSpending,
+      baseLivingExpense,
+      goals,
       years,
       realReturn,
       volatility,
@@ -380,7 +421,10 @@ export const runWhatIfSimulation = action({
             years: partTimeWork.years,
           }
         : undefined,
-      essentialFloor: inputs.essentialFloor,
+      essentialFloor: args.annualSpending
+        ? args.annualSpending * 0.7 // Fallback floor for what-if
+        : inputs.simulationEssentialFloor,
+      spendingCeiling: inputs.spendingCeiling,
       guardrails: guardrails ?? undefined,
     };
 
@@ -392,6 +436,8 @@ export const runWhatIfSimulation = action({
       ...results,
       scenario: {
         portfolioValue: inputs.portfolioValue,
+        baseLivingExpense,
+        totalAnnualSpending: baseLivingExpense + (goals?.reduce((s, g) => s + g.annualAmount, 0) ?? 0),
         annualSpending,
         years,
         retirementAge,
@@ -435,7 +481,13 @@ export const runSensitivityAnalysis = action({
 
     const baseInput: SimulationInput = {
       startingPortfolio: inputs.portfolioValue,
-      annualSpending: inputs.annualSpending,
+      baseLivingExpense: inputs.baseLivingExpense,
+      goals: inputs.goals?.map((g) => ({
+        annualAmount: g.annualAmount,
+        isEssential: g.isEssential,
+        startYear: g.startYear,
+        endYear: g.endYear,
+      })),
       years,
       realReturn: inputs.realReturn,
       volatility: inputs.volatility,
@@ -445,7 +497,8 @@ export const runSensitivityAnalysis = action({
             annualAmount: inputs.socialSecurity.annualAmount,
           }
         : undefined,
-      essentialFloor: inputs.essentialFloor,
+      essentialFloor: inputs.simulationEssentialFloor,
+      spendingCeiling: inputs.spendingCeiling,
       guardrails: inputs.guardrails ?? undefined,
     };
 
@@ -455,8 +508,8 @@ export const runSensitivityAnalysis = action({
     // Test each variable ±20%
     const variables = [
       {
-        name: "Annual Spending",
-        key: "annualSpending",
+        name: "Base Spending",
+        key: "baseLivingExpense",
         lowMult: 0.8,
         highMult: 1.2,
         format: (v: number) => `$${Math.round(v).toLocaleString()}`,

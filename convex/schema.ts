@@ -277,6 +277,9 @@ export default defineSchema({
     currentAge: v.number(),
     annualSpending: v.number(),
     isSpendingAutoCalculated: v.boolean(),
+    // Base living expenses (essentials) - used as the guardrails floor
+    monthlyBaseLivingExpense: v.optional(v.number()),
+    isBaseLivingExpenseAutoCalculated: v.optional(v.boolean()),
   }),
 
   // ============================================
@@ -344,6 +347,8 @@ export default defineSchema({
     startYear: v.optional(v.number()), // when this budget starts (default: retirement)
     endYear: v.optional(v.number()), // when this budget ends (default: never)
     notes: v.optional(v.string()),
+    // If true, guardrails will never cut this budget item
+    isEssential: v.optional(v.boolean()),
     createdAt: v.number(),
   }),
 

@@ -1,105 +1,87 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { useQuery, useMutation } from "convex/react";
+import { useState, useCallback, useMemo } from "react";
+import { useQuery, useAction } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/Tabs";
-import { ProjectionChart } from "@/components/projections/ProjectionChart";
-import { QuickSettings } from "@/components/projections/QuickSettings";
-import { ReadinessStatus, ReadinessStatusBadge } from "@/components/projections/ReadinessStatus";
-import { GuardrailsConfig } from "@/components/projections/GuardrailsConfig";
-import { GuardrailsChart } from "@/components/projections/GuardrailsChart";
-import { MonteCarloTab } from "@/components/monteCarlo/MonteCarloTab";
-import {
-  calculateProjection,
-  calculateRetirementAge,
-  formatTimeUntilRetirement,
-  PROJECTION_DEFAULTS,
-} from "@/lib/calculations/projections";
-import { formatCurrency } from "@/lib/utils";
-import {
-  Calendar,
-  TrendingUp,
-  Target,
-  Loader2,
-  ChevronDown,
-  ChevronUp,
-  Info,
-  LineChart,
-  Shield,
-  Dices,
-} from "lucide-react";
+import { UnifiedSettingsForm } from "@/components/projections/UnifiedSettingsForm";
+import { ResultsComparisonDashboard } from "@/components/projections/ResultsComparisonDashboard";
+import { WhatIfCalculator } from "@/components/monteCarlo/WhatIfCalculator";
+import { calculateProjection } from "@/lib/calculations/projections";
+import { Loader2, Settings, BarChart3, FlaskConical } from "lucide-react";
 
 export default function ProjectionsPage() {
-  const [showAssumptions, setShowAssumptions] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState("standard");
+  const [activeTab, setActiveTab] = useState("results");
+  const [settingsKey, setSettingsKey] = useState(0);
 
-  // Queries
-  const inputs = useQuery(api.projections.queries.getProjectionInputs);
+  // Queries for What-If tab
+  const simulationInputs = useQuery(api.monteCarlo.queries.getSimulationInputs);
+  const assumptions = useQuery(api.monteCarlo.queries.getAssumptionsWithDefaults);
+  const projectionInputs = useQuery(api.projections.queries.getProjectionInputs);
   const guardrailsConfig = useQuery(api.guardrails.queries.getWithDefaults);
-  const upsertProfile = useMutation(api.retirementProfile.mutations.upsert);
-
-  // Calculate retirement age for the guardrails query
-  const retirementAge = useMemo(() => {
-    if (!inputs?.profile) return null;
-    return calculateRetirementAge(
-      inputs.profile.retirementDate,
-      inputs.profile.currentAge
-    );
-  }, [inputs?.profile]);
-
-  // Guardrails projection query (only when enabled and we have profile)
   const guardrailsProjection = useQuery(
     api.projections.queries.calculateProjectionWithGuardrails,
-    inputs?.profile && retirementAge
+    projectionInputs?.profile && simulationInputs?.retirementAge
       ? {
-          currentNetWorth: inputs.currentNetWorth,
-          annualSpending: inputs.profile.annualSpending,
-          currentAge: inputs.profile.currentAge,
-          retirementAge: retirementAge,
+          currentNetWorth: projectionInputs.currentNetWorth,
+          annualSpending: projectionInputs.profile.annualSpending,
+          currentAge: projectionInputs.profile.currentAge,
+          retirementAge: simulationInputs.retirementAge,
         }
       : "skip"
   );
 
-  const isLoading = inputs === undefined;
+  // Actions for What-If
+  const runWhatIf = useAction(api.monteCarlo.actions.runWhatIfSimulation);
 
-  // Calculate standard projection when we have data
-  const projection = useMemo(() => {
-    if (!inputs?.profile || !retirementAge) return null;
+  // Baseline for What-If (requires a run first)
+  const [whatIfBaseline] = useState<{
+    successRate: number;
+  } | null>(null);
 
-    const { profile, currentNetWorth } = inputs;
+  // Calculate standard projection for baseline comparison
+  const standardProjection = useMemo(() => {
+    if (!projectionInputs?.profile || !simulationInputs?.retirementAge) return null;
 
     return calculateProjection({
-      currentNetWorth,
-      annualSpending: profile.annualSpending,
-      currentAge: profile.currentAge,
-      retirementAge,
+      currentNetWorth: projectionInputs.currentNetWorth,
+      annualSpending: projectionInputs.profile.annualSpending,
+      currentAge: projectionInputs.profile.currentAge,
+      retirementAge: simulationInputs.retirementAge,
     });
-  }, [inputs, retirementAge]);
+  }, [projectionInputs, simulationInputs]);
 
-  const yearsUntilRetirement = useMemo(() => {
-    if (!inputs?.profile) return null;
-    const retireDate = new Date(inputs.profile.retirementDate);
-    const now = new Date();
-    return (retireDate.getTime() - now.getTime()) / (365.25 * 24 * 60 * 60 * 1000);
-  }, [inputs?.profile]);
+  // Handle settings changed - force re-render of results
+  const handleSettingsChanged = useCallback(() => {
+    setSettingsKey((k) => k + 1);
+  }, []);
 
-  const handleSaveSettings = async (settings: {
-    retirementDate: number;
-    currentAge: number;
-    annualSpending: number;
-    isSpendingAutoCalculated: boolean;
-  }) => {
-    setIsSaving(true);
-    try {
-      await upsertProfile(settings);
-    } finally {
-      setIsSaving(false);
-    }
+  // Handle What-If simulations
+  const handleWhatIf = useCallback(
+    async (params: {
+      annualSpending?: number;
+      retirementAge?: number;
+      planToAge?: number;
+      ssClaimingAge?: number;
+      guardrailsEnabled?: boolean;
+    }) => {
+      const result = await runWhatIf(params);
+      return {
+        successRate: result.successRate,
+        changesFromBaseline: result.changesFromBaseline,
+      };
+    },
+    [runWhatIf]
+  );
+
+  // Set baseline when switching to What-If tab
+  const handleTabChange = (value: string) => {
+    setActiveTab(value);
   };
+
+  const isLoading = simulationInputs === undefined || assumptions === undefined;
 
   return (
     <div className="flex h-screen">
@@ -110,265 +92,107 @@ export default function ProjectionsPage() {
           <div className="mb-8">
             <h1 className="text-2xl font-bold">Retirement Projections</h1>
             <p className="text-muted-foreground mt-1">
-              See how your retirement savings may grow over time
+              Configure your settings, view projections, and explore scenarios
             </p>
           </div>
 
-          {isLoading ? (
-            <div className="flex items-center justify-center py-24">
-              <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-            </div>
-          ) : (
-            <div className="space-y-6">
-              {/* Summary Cards - only show if we have a profile */}
-              {inputs?.profile && projection && (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {/* Time Until Retirement */}
-                  <Card>
-                    <CardContent className="pt-6">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                          <Calendar className="w-5 h-5 text-primary" />
-                        </div>
-                        <div>
-                          <p className="text-sm text-muted-foreground">
-                            Retire in
-                          </p>
-                          <p className="text-2xl font-semibold">
-                            {yearsUntilRetirement !== null && yearsUntilRetirement > 0
-                              ? formatTimeUntilRetirement(yearsUntilRetirement)
-                              : "Retired"}
-                          </p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+          {/* Main Tabs */}
+          <Tabs defaultValue="results" value={activeTab} onValueChange={handleTabChange}>
+            <TabsList className="mb-6">
+              <TabsTrigger value="settings">
+                <Settings className="w-4 h-4 mr-2" />
+                Settings
+              </TabsTrigger>
+              <TabsTrigger value="results">
+                <BarChart3 className="w-4 h-4 mr-2" />
+                Results
+              </TabsTrigger>
+              <TabsTrigger value="whatif">
+                <FlaskConical className="w-4 h-4 mr-2" />
+                What-If
+              </TabsTrigger>
+            </TabsList>
 
-                  {/* Projected Net Worth at Retirement */}
-                  <Card>
-                    <CardContent className="pt-6">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-lg bg-green-500/10 flex items-center justify-center">
-                          <TrendingUp className="w-5 h-5 text-green-500" />
-                        </div>
-                        <div>
-                          <p className="text-sm text-muted-foreground">
-                            Projected at Retirement
-                          </p>
-                          <p className="text-2xl font-semibold">
-                            {formatCurrency(projection.projectedNetWorthAtRetirement)}
-                          </p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  {/* Status */}
-                  <Card>
-                    <CardContent className="pt-6">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center">
-                          <Target className="w-5 h-5 text-muted-foreground" />
-                        </div>
-                        <div>
-                          <p className="text-sm text-muted-foreground">Status</p>
-                          <ReadinessStatusBadge status={projection.status} />
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-              )}
-
-              {/* Projection Tabs */}
-              {inputs?.profile && projection && retirementAge && (
-                <Card>
-                  <CardContent className="pt-6">
-                    <Tabs defaultValue="standard" value={activeTab} onValueChange={setActiveTab}>
-                      <TabsList>
-                        <TabsTrigger value="standard">
-                          <LineChart className="w-4 h-4 mr-2" />
-                          Standard Projection
-                        </TabsTrigger>
-                        <TabsTrigger value="guardrails">
-                          <Shield className="w-4 h-4 mr-2" />
-                          Guardrails Strategy
-                          {guardrailsConfig?.isEnabled && (
-                            <span className="ml-2 w-2 h-2 rounded-full bg-green-500" />
-                          )}
-                        </TabsTrigger>
-                        <TabsTrigger value="montecarlo">
-                          <Dices className="w-4 h-4 mr-2" />
-                          Monte Carlo
-                        </TabsTrigger>
-                      </TabsList>
-
-                      <TabsContent value="standard" className="mt-6">
-                        <ProjectionChart
-                          data={projection.years}
-                          retirementAge={retirementAge}
-                          currentAge={inputs.profile.currentAge}
-                          height={400}
-                        />
-                      </TabsContent>
-
-                      <TabsContent value="guardrails" className="mt-6 space-y-6">
-                        {/* Guardrails Config */}
-                        <GuardrailsConfig baseSpending={inputs.profile.annualSpending} />
-
-                        {/* Guardrails Chart (only if enabled) */}
-                        {guardrailsProjection?.isEnabled && guardrailsProjection.summary && (
-                          <GuardrailsChart
-                            years={guardrailsProjection.years}
-                            summary={guardrailsProjection.summary}
-                            retirementAge={retirementAge}
-                            currentAge={inputs.profile.currentAge}
-                            lifeExpectancy={PROJECTION_DEFAULTS.lifeExpectancy}
-                          />
-                        )}
-
-                        {/* Message when guardrails not enabled */}
-                        {!guardrailsConfig?.isEnabled && (
-                          <div className="text-center py-12 bg-muted/30 rounded-lg">
-                            <Shield className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                            <h3 className="font-medium mb-2">
-                              Enable Guardrails to See Dynamic Spending
-                            </h3>
-                            <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                              The guardrails strategy automatically adjusts your spending based on
-                              portfolio performance, helping you avoid running out of money while
-                              enjoying good years.
-                            </p>
-                          </div>
-                        )}
-                      </TabsContent>
-
-                      <TabsContent value="montecarlo" className="mt-6">
-                        <MonteCarloTab />
-                      </TabsContent>
-                    </Tabs>
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Status Details - only show if we have projection */}
-              {inputs?.profile && projection && (
-                <ReadinessStatus
-                  status={projection.status}
-                  expectedRunsOutAge={projection.expectedRunsOutAge}
-                  optimisticRunsOutAge={projection.optimisticRunsOutAge}
-                  pessimisticRunsOutAge={projection.pessimisticRunsOutAge}
-                  lifeExpectancy={PROJECTION_DEFAULTS.lifeExpectancy}
-                />
-              )}
-
-              {/* Quick Settings */}
-              <QuickSettings
-                retirementDate={inputs?.profile?.retirementDate ?? null}
-                currentAge={inputs?.profile?.currentAge ?? null}
-                annualSpending={inputs?.profile?.annualSpending ?? null}
-                suggestedSpending={inputs?.suggestedSpending ?? 0}
-                isSpendingAutoCalculated={inputs?.profile?.isSpendingAutoCalculated ?? false}
-                onSave={handleSaveSettings}
-                isSaving={isSaving}
-              />
-
-              {/* Current Net Worth Summary */}
-              {inputs && (
-                <Card>
-                  <CardContent className="pt-6">
-                    <h3 className="font-medium mb-4">Current Financial Snapshot</h3>
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                      <div>
-                        <p className="text-sm text-muted-foreground">Net Worth</p>
-                        <p className="text-lg font-semibold">
-                          {formatCurrency(inputs.currentNetWorth)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">Investments</p>
-                        <p className="text-lg font-semibold">
-                          {formatCurrency(inputs.investments)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">Cash</p>
-                        <p className="text-lg font-semibold">
-                          {formatCurrency(inputs.cash)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">Assets</p>
-                        <p className="text-lg font-semibold">
-                          {formatCurrency(inputs.assets)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">Liabilities</p>
-                        <p className="text-lg font-semibold text-red-500">
-                          -{formatCurrency(inputs.liabilities)}
-                        </p>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Collapsible Assumptions */}
+            {/* Settings Tab */}
+            <TabsContent value="settings" className="mt-0">
               <Card>
                 <CardContent className="pt-6">
-                  <button
-                    onClick={() => setShowAssumptions(!showAssumptions)}
-                    className="flex items-center justify-between w-full text-left"
-                  >
-                    <div className="flex items-center gap-2">
-                      <Info className="w-4 h-4 text-muted-foreground" />
-                      <h3 className="font-medium">Projection Assumptions</h3>
-                    </div>
-                    {showAssumptions ? (
-                      <ChevronUp className="w-4 h-4 text-muted-foreground" />
-                    ) : (
-                      <ChevronDown className="w-4 h-4 text-muted-foreground" />
-                    )}
-                  </button>
-
-                  {showAssumptions && (
-                    <div className="mt-4 pt-4 border-t border-border">
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                        <div>
-                          <p className="text-muted-foreground">Expected Return</p>
-                          <p className="font-medium">
-                            {(PROJECTION_DEFAULTS.expectedReturn * 100).toFixed(0)}% real
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-muted-foreground">Optimistic Return</p>
-                          <p className="font-medium">
-                            {(PROJECTION_DEFAULTS.optimisticReturn * 100).toFixed(0)}% real
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-muted-foreground">Pessimistic Return</p>
-                          <p className="font-medium">
-                            {(PROJECTION_DEFAULTS.pessimisticReturn * 100).toFixed(0)}% real
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-muted-foreground">Plan to Age</p>
-                          <p className="font-medium">{PROJECTION_DEFAULTS.lifeExpectancy}</p>
-                        </div>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-4">
-                        Returns are &quot;real&quot; returns (after inflation). Spending is assumed constant
-                        in today&apos;s dollars. This is a simplified projection and does not account
-                        for taxes, Social Security, or other income sources.
-                      </p>
-                    </div>
-                  )}
+                  <UnifiedSettingsForm onSettingsChanged={handleSettingsChanged} />
                 </CardContent>
               </Card>
-            </div>
-          )}
+            </TabsContent>
+
+            {/* Results Tab */}
+            <TabsContent value="results" className="mt-0">
+              <ResultsComparisonDashboard key={settingsKey} />
+            </TabsContent>
+
+            {/* What-If Tab */}
+            <TabsContent value="whatif" className="mt-0">
+              {isLoading ? (
+                <div className="flex items-center justify-center py-24">
+                  <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : !simulationInputs.isReady ? (
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="text-center py-12">
+                      <p className="text-muted-foreground mb-4">
+                        Complete your profile in the Settings tab to use the What-If calculator
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="space-y-6">
+                  <Card>
+                    <CardContent className="pt-6">
+                      <h3 className="font-medium mb-2">What-If Calculator</h3>
+                      <p className="text-sm text-muted-foreground mb-4">
+                        Explore how changes to your plan affect your success rate.
+                        Adjust the sliders to see the impact in real-time.
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  <WhatIfCalculator
+                    baseline={{
+                      annualSpending: simulationInputs.annualSpending,
+                      retirementAge: simulationInputs.retirementAge ?? 65,
+                      planToAge: simulationInputs.planToAge,
+                      ssClaimingAge: simulationInputs.socialSecurity?.claimingAge,
+                      successRate: whatIfBaseline?.successRate ?? 0,
+                      // Additional data for 3-model comparison
+                      currentNetWorth: projectionInputs?.currentNetWorth,
+                      currentAge: projectionInputs?.profile?.currentAge,
+                      standardStatus: standardProjection?.status,
+                      guardrailsEnabled: guardrailsConfig?.isEnabled ?? false,
+                      guardrailsSpendingRange: guardrailsProjection?.summary
+                        ? {
+                            min: guardrailsProjection.summary.minSpending,
+                            max: guardrailsProjection.summary.maxSpending,
+                          }
+                        : undefined,
+                    }}
+                    onRunWhatIf={handleWhatIf}
+                    isLoading={false}
+                  />
+
+                  {!whatIfBaseline && (
+                    <Card>
+                      <CardContent className="pt-6">
+                        <div className="text-center py-8 bg-muted/30 rounded-lg">
+                          <p className="text-muted-foreground">
+                            Run simulations in the Results tab first to see comparisons.
+                          </p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
+              )}
+            </TabsContent>
+          </Tabs>
         </div>
       </main>
     </div>

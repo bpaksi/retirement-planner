@@ -5,15 +5,33 @@
  * Validated against 4% rule (~87% success) and other benchmarks.
  *
  * Performance: ~13ms for 10,000 iterations
+ *
+ * Key features:
+ * - Integrated guardrails that run within each Monte Carlo path
+ * - Goal-based spending with start/end years
+ * - Essential floor protection (guardrails never cut below this)
+ * - Spending ceiling to prevent over-spending in good years
  */
 
 // ============================================================================
 // Types
 // ============================================================================
 
+export interface SpendingGoal {
+  annualAmount: number;
+  isEssential: boolean;
+  startYear?: number; // Year number (0-indexed from retirement start)
+  endYear?: number; // Year number (0-indexed from retirement start)
+}
+
 export interface SimulationInput {
   startingPortfolio: number;
-  annualSpending: number;
+  /** Base living expenses (essentials) - stays constant */
+  baseLivingExpense: number;
+  /** Legacy: total annual spending if not using breakdown */
+  annualSpending?: number;
+  /** Goal-based additional spending */
+  goals?: SpendingGoal[];
   years: number;
   realReturn: number;
   volatility: number;
@@ -25,7 +43,10 @@ export interface SimulationInput {
     income: number;
     years: number;
   };
+  /** Minimum spending floor (base + essential goals) - guardrails never go below */
   essentialFloor?: number;
+  /** Maximum spending ceiling - guardrails never go above */
+  spendingCeiling?: number;
   guardrails?: GuardrailsConfig;
 }
 
@@ -42,6 +63,8 @@ export interface YearResult {
   startBalance: number;
   return: number;
   spending: number;
+  baseSpending: number;
+  goalsSpending: number;
   ssIncome: number;
   workIncome: number;
   endBalance: number;
@@ -101,16 +124,77 @@ export function normalRandom(mean: number, stdDev: number): number {
 // Single Simulation
 // ============================================================================
 
+/**
+ * Calculate total spending for a given year, including active goals.
+ */
+function calculateSpendingForYear(
+  baseLivingExpense: number,
+  goals: SpendingGoal[] | undefined,
+  year: number
+): { total: number; goalsAmount: number } {
+  let goalsAmount = 0;
+
+  if (goals) {
+    for (const goal of goals) {
+      // Check if goal is active this year
+      const startsBeforeOrDuringYear = goal.startYear === undefined || goal.startYear <= year;
+      const endsAfterOrDuringYear = goal.endYear === undefined || goal.endYear >= year;
+
+      if (startsBeforeOrDuringYear && endsAfterOrDuringYear) {
+        goalsAmount += goal.annualAmount;
+      }
+    }
+  }
+
+  return {
+    total: baseLivingExpense + goalsAmount,
+    goalsAmount,
+  };
+}
+
+/**
+ * Calculate the essential floor for a given year (base + essential goals only).
+ */
+function calculateEssentialFloorForYear(
+  baseLivingExpense: number,
+  goals: SpendingGoal[] | undefined,
+  year: number
+): number {
+  let essentialGoalsAmount = 0;
+
+  if (goals) {
+    for (const goal of goals) {
+      if (!goal.isEssential) continue;
+
+      const startsBeforeOrDuringYear = goal.startYear === undefined || goal.startYear <= year;
+      const endsAfterOrDuringYear = goal.endYear === undefined || goal.endYear >= year;
+
+      if (startsBeforeOrDuringYear && endsAfterOrDuringYear) {
+        essentialGoalsAmount += goal.annualAmount;
+      }
+    }
+  }
+
+  return baseLivingExpense + essentialGoalsAmount;
+}
+
 export function runSingleSimulation(
   input: SimulationInput,
   includeYearByYear = false
 ): SimulationResult {
   let balance = input.startingPortfolio;
-  let spending = input.annualSpending;
   let lowestBalance = balance;
   let lowestBalanceYear = 0;
   const initialPortfolio = input.startingPortfolio;
   const yearResults: YearResult[] = [];
+
+  // Determine base living expense
+  // If baseLivingExpense is provided, use it; otherwise fall back to annualSpending
+  const baseLivingExpense = input.baseLivingExpense ?? input.annualSpending ?? 0;
+
+  // Track spending multiplier for guardrails adjustments (starts at 1.0 = 100%)
+  // This applies to the full spending, not just base
+  let spendingMultiplier = 1.0;
 
   for (let year = 0; year < input.years; year++) {
     const startBalance = balance;
@@ -133,23 +217,53 @@ export function runSingleSimulation(
       balance += workIncome;
     }
 
-    // 4. Apply guardrails if enabled
+    // 4. Calculate spending for this year (base + active goals)
+    const { total: targetSpending, goalsAmount } = calculateSpendingForYear(
+      baseLivingExpense,
+      input.goals,
+      year
+    );
+
+    // 5. Apply guardrails if enabled
     let guardrailTriggered: "ceiling" | "floor" | null = null;
+    let actualSpending = targetSpending * spendingMultiplier;
+
     if (input.guardrails?.enabled) {
       const ratio = balance / initialPortfolio;
 
       if (ratio >= input.guardrails.upperThreshold) {
-        spending *= 1 + input.guardrails.increasePercent;
+        // Portfolio is doing well - increase spending
+        spendingMultiplier *= 1 + input.guardrails.increasePercent;
         guardrailTriggered = "ceiling";
+        actualSpending = targetSpending * spendingMultiplier;
+
+        // Apply ceiling if specified
+        if (input.spendingCeiling && actualSpending > input.spendingCeiling) {
+          actualSpending = input.spendingCeiling;
+          // Recalculate multiplier to respect ceiling
+          spendingMultiplier = actualSpending / targetSpending;
+        }
       } else if (ratio <= input.guardrails.lowerThreshold) {
-        const decreased = spending * (1 - input.guardrails.decreasePercent);
-        spending = Math.max(decreased, input.essentialFloor ?? decreased);
+        // Portfolio is struggling - decrease spending
+        spendingMultiplier *= 1 - input.guardrails.decreasePercent;
         guardrailTriggered = "floor";
+        actualSpending = targetSpending * spendingMultiplier;
+
+        // Calculate essential floor for this year (base + essential goals)
+        const essentialFloor = input.essentialFloor ??
+          calculateEssentialFloorForYear(baseLivingExpense, input.goals, year);
+
+        // Never go below essential floor
+        if (actualSpending < essentialFloor) {
+          actualSpending = essentialFloor;
+          // Recalculate multiplier to respect floor
+          spendingMultiplier = actualSpending / targetSpending;
+        }
       }
     }
 
-    // 5. Withdraw spending
-    balance -= spending;
+    // 6. Withdraw spending
+    balance -= actualSpending;
 
     // Track year results if requested
     if (includeYearByYear) {
@@ -157,7 +271,9 @@ export function runSingleSimulation(
         year,
         startBalance,
         return: annualReturn,
-        spending,
+        spending: actualSpending,
+        baseSpending: baseLivingExpense * spendingMultiplier,
+        goalsSpending: goalsAmount * spendingMultiplier,
         ssIncome,
         workIncome,
         endBalance: balance,
@@ -171,7 +287,7 @@ export function runSingleSimulation(
       lowestBalanceYear = year;
     }
 
-    // 6. Check failure
+    // 7. Check failure
     if (balance <= 0) {
       return {
         success: false,

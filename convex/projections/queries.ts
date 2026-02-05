@@ -9,6 +9,193 @@ const DEFAULTS = {
   lifeExpectancy: 95,
 };
 
+// ============================================
+// SPENDING BREAKDOWN
+// ============================================
+
+export interface SpendingGoal {
+  _id: string;
+  name: string;
+  annualAmount: number;
+  monthlyAmount: number;
+  isEssential: boolean;
+  startYear?: number;
+  endYear?: number;
+  notes?: string;
+}
+
+export interface SpendingBreakdown {
+  // Base living expenses (from transaction history or manual)
+  baseLivingExpense: number;
+  monthlyBaseLivingExpense: number;
+  isBaseLivingExpenseAutoCalculated: boolean;
+  suggestedBaseLivingExpense: number; // Median of last 12 months
+  // Goals (from annualBudgets)
+  goals: SpendingGoal[];
+  totalGoalsAmount: number;
+  essentialGoalsAmount: number;
+  discretionaryGoalsAmount: number;
+  // Totals
+  totalAnnualSpending: number;
+  essentialFloor: number; // baseLivingExpense + essential goals (guardrails never cut below this)
+  discretionaryAmount: number; // Non-essential goals that guardrails can reduce
+  // Data quality
+  monthsOfTransactionData: number;
+  hasEnoughTransactionData: boolean;
+}
+
+/**
+ * Get a breakdown of spending for use in projections.
+ *
+ * This combines:
+ * 1. Base living expenses (from transactions or manual entry)
+ * 2. Goals/budgets from the annualBudgets table
+ *
+ * Used by Monte Carlo simulations with integrated guardrails.
+ */
+export const getSpendingBreakdown = query({
+  args: {},
+  handler: async (ctx): Promise<SpendingBreakdown> => {
+    // Get retirement profile
+    const profile = await ctx.db.query("retirementProfile").first();
+
+    // Get annual budgets (goals)
+    const annualBudgets = await ctx.db.query("annualBudgets").collect();
+
+    // Calculate suggested base living expense from transaction history
+    // Using MEDIAN of monthly expenses for robustness
+    const now = Date.now();
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+    const startDate = oneYearAgo.getTime();
+
+    // Get accounts for spending calculation
+    const accounts = await ctx.db.query("accounts").collect();
+    const activeAccounts = accounts.filter((a) => a.isActive);
+    const spendingAccountTypes = new Set([
+      "credit_card",
+      "checking",
+      "savings",
+      "money_market",
+    ]);
+    const spendingAccountIds = new Set(
+      activeAccounts
+        .filter((a) => spendingAccountTypes.has(a.type))
+        .map((a) => a._id.toString())
+    );
+
+    // Get categories to exclude transfers
+    const categories = await ctx.db.query("categories").collect();
+    const transferCategoryIds = new Set(
+      categories.filter((c) => c.type === "transfer").map((c) => c._id.toString())
+    );
+
+    // Get transactions
+    const allTransactions = await ctx.db.query("transactions").collect();
+    const relevantTransactions = allTransactions.filter((t) => {
+      if (!spendingAccountIds.has(t.accountId.toString())) return false;
+      if (t.date < startDate || t.date > now) return false;
+      if (t.amount >= 0) return false; // Only expenses (negative amounts)
+      if (t.isTransfer) return false;
+      if (t.categoryId && transferCategoryIds.has(t.categoryId.toString())) return false;
+      return true;
+    });
+
+    // Group by month and calculate median
+    const monthlyTotals: number[] = [];
+    if (relevantTransactions.length > 0) {
+      // Group transactions by month
+      const byMonth = new Map<string, number>();
+      for (const t of relevantTransactions) {
+        const date = new Date(t.date);
+        const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
+        const existing = byMonth.get(monthKey) ?? 0;
+        byMonth.set(monthKey, existing + Math.abs(t.amount));
+      }
+
+      // Get sorted monthly totals for median calculation
+      monthlyTotals.push(...byMonth.values());
+      monthlyTotals.sort((a, b) => a - b);
+    }
+
+    // Calculate median monthly expense
+    let suggestedMonthlyBaseLivingExpense = 0;
+    if (monthlyTotals.length > 0) {
+      const midIndex = Math.floor(monthlyTotals.length / 2);
+      if (monthlyTotals.length % 2 === 0) {
+        suggestedMonthlyBaseLivingExpense = (monthlyTotals[midIndex - 1] + monthlyTotals[midIndex]) / 2;
+      } else {
+        suggestedMonthlyBaseLivingExpense = monthlyTotals[midIndex];
+      }
+    }
+    const suggestedBaseLivingExpense = Math.round(suggestedMonthlyBaseLivingExpense * 12);
+
+    // Determine base living expense
+    // Priority: manual override > auto-calculated > fallback to legacy annualSpending
+    let baseLivingExpense: number;
+    let monthlyBaseLivingExpense: number;
+    let isBaseLivingExpenseAutoCalculated: boolean;
+
+    if (profile?.monthlyBaseLivingExpense !== undefined) {
+      // Manual or auto-calculated base expense exists
+      monthlyBaseLivingExpense = profile.monthlyBaseLivingExpense;
+      baseLivingExpense = monthlyBaseLivingExpense * 12;
+      isBaseLivingExpenseAutoCalculated = profile.isBaseLivingExpenseAutoCalculated ?? false;
+    } else if (profile?.annualSpending) {
+      // Fall back to legacy annual spending
+      baseLivingExpense = profile.annualSpending;
+      monthlyBaseLivingExpense = baseLivingExpense / 12;
+      isBaseLivingExpenseAutoCalculated = profile.isSpendingAutoCalculated;
+    } else {
+      // No spending data
+      baseLivingExpense = 0;
+      monthlyBaseLivingExpense = 0;
+      isBaseLivingExpenseAutoCalculated = false;
+    }
+
+    // Convert annual budgets to goals
+    const goals: SpendingGoal[] = annualBudgets.map((budget) => ({
+      _id: budget._id.toString(),
+      name: budget.name,
+      annualAmount: budget.annualAmount,
+      monthlyAmount: Math.round(budget.annualAmount / 12),
+      isEssential: budget.isEssential ?? false,
+      startYear: budget.startYear,
+      endYear: budget.endYear,
+      notes: budget.notes,
+    }));
+
+    // Calculate totals
+    const totalGoalsAmount = goals.reduce((sum, g) => sum + g.annualAmount, 0);
+    const essentialGoalsAmount = goals
+      .filter((g) => g.isEssential)
+      .reduce((sum, g) => sum + g.annualAmount, 0);
+    const discretionaryGoalsAmount = goals
+      .filter((g) => !g.isEssential)
+      .reduce((sum, g) => sum + g.annualAmount, 0);
+
+    const totalAnnualSpending = baseLivingExpense + totalGoalsAmount;
+    const essentialFloor = baseLivingExpense + essentialGoalsAmount;
+    const discretionaryAmount = discretionaryGoalsAmount;
+
+    return {
+      baseLivingExpense,
+      monthlyBaseLivingExpense,
+      isBaseLivingExpenseAutoCalculated,
+      suggestedBaseLivingExpense,
+      goals,
+      totalGoalsAmount,
+      essentialGoalsAmount,
+      discretionaryGoalsAmount,
+      totalAnnualSpending,
+      essentialFloor,
+      discretionaryAmount,
+      monthsOfTransactionData: monthlyTotals.length,
+      hasEnoughTransactionData: monthlyTotals.length >= 3,
+    };
+  },
+});
+
 // Get all inputs needed for projection
 export const getProjectionInputs = query({
   args: {},

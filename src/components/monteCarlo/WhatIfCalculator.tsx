@@ -1,10 +1,14 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { formatPercent, cn } from "@/lib/utils";
+import { formatPercent, formatCurrency, cn } from "@/lib/utils";
+import {
+  calculateProjection,
+  PROJECTION_DEFAULTS,
+} from "@/lib/calculations/projections";
 import {
   ArrowRight,
   RotateCcw,
@@ -13,6 +17,12 @@ import {
   TrendingDown,
   Minus,
   Save,
+  LineChart,
+  Shield,
+  Dices,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
 } from "lucide-react";
 
 interface WhatIfCalculatorProps {
@@ -22,6 +32,12 @@ interface WhatIfCalculatorProps {
     planToAge: number;
     ssClaimingAge?: number;
     successRate: number;
+    // Additional baseline data for 3-model comparison
+    currentNetWorth?: number;
+    currentAge?: number;
+    standardStatus?: "on_track" | "at_risk" | "behind";
+    guardrailsEnabled?: boolean;
+    guardrailsSpendingRange?: { min: number; max: number };
   };
   onRunWhatIf: (params: WhatIfParams) => Promise<{
     successRate: number;
@@ -121,6 +137,197 @@ function SliderInput({
   );
 }
 
+// Component for 3-model comparison table
+function ModelComparisonTable({
+  baseline,
+  whatIf,
+  isLoading,
+}: {
+  baseline: {
+    standard: { status: string; fundsTo: string };
+    guardrails: { enabled: boolean; range?: string; status?: string };
+    monteCarlo: { successRate: number };
+  };
+  whatIf: {
+    standard: { status: string; fundsTo: string };
+    guardrails: { enabled: boolean; range?: string; status?: string };
+    monteCarlo: { successRate: number };
+  } | null;
+  isLoading: boolean;
+}) {
+  const getStatusIcon = (status: string) => {
+    if (status === "on_track" || status === "success") {
+      return <CheckCircle2 className="w-4 h-4 text-green-500" />;
+    }
+    if (status === "at_risk" || status === "warning") {
+      return <AlertTriangle className="w-4 h-4 text-yellow-500" />;
+    }
+    return <XCircle className="w-4 h-4 text-red-500" />;
+  };
+
+  const formatStatus = (status: string) => {
+    if (status === "on_track") return "On Track";
+    if (status === "at_risk") return "At Risk";
+    if (status === "behind") return "Behind";
+    return status;
+  };
+
+  const getChangeIndicator = (
+    baselineValue: number,
+    whatIfValue: number | null | undefined
+  ) => {
+    if (whatIfValue === null || whatIfValue === undefined) return null;
+    const diff = whatIfValue - baselineValue;
+    if (Math.abs(diff) < 0.001) return <Minus className="w-3 h-3 text-muted-foreground" />;
+    if (diff > 0) return <TrendingUp className="w-3 h-3 text-green-500" />;
+    return <TrendingDown className="w-3 h-3 text-red-500" />;
+  };
+
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-muted/50">
+            <th className="px-3 py-2 text-left font-medium">Model</th>
+            <th className="px-3 py-2 text-center font-medium">Current</th>
+            <th className="px-3 py-2 text-center font-medium">What-If</th>
+            <th className="px-3 py-2 text-center font-medium">Change</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {/* Standard */}
+          <tr>
+            <td className="px-3 py-2">
+              <div className="flex items-center gap-2">
+                <LineChart className="w-4 h-4 text-blue-500" />
+                <span>Standard</span>
+              </div>
+            </td>
+            <td className="px-3 py-2 text-center">
+              <div className="flex items-center justify-center gap-1">
+                {getStatusIcon(baseline.standard.status)}
+                <span>{formatStatus(baseline.standard.status)}</span>
+              </div>
+            </td>
+            <td className="px-3 py-2 text-center">
+              {isLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin mx-auto" />
+              ) : whatIf ? (
+                <div className="flex items-center justify-center gap-1">
+                  {getStatusIcon(whatIf.standard.status)}
+                  <span>{formatStatus(whatIf.standard.status)}</span>
+                </div>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
+            </td>
+            <td className="px-3 py-2 text-center">
+              {whatIf && baseline.standard.status !== whatIf.standard.status ? (
+                whatIf.standard.status === "on_track" && baseline.standard.status !== "on_track" ? (
+                  <span className="text-green-500 text-xs">Improved</span>
+                ) : whatIf.standard.status === "behind" && baseline.standard.status !== "behind" ? (
+                  <span className="text-red-500 text-xs">Worse</span>
+                ) : (
+                  <span className="text-yellow-500 text-xs">Changed</span>
+                )
+              ) : (
+                <span className="text-muted-foreground text-xs">—</span>
+              )}
+            </td>
+          </tr>
+
+          {/* Guardrails */}
+          <tr>
+            <td className="px-3 py-2">
+              <div className="flex items-center gap-2">
+                <Shield className="w-4 h-4 text-emerald-500" />
+                <span>Guardrails</span>
+              </div>
+            </td>
+            <td className="px-3 py-2 text-center">
+              {baseline.guardrails.enabled ? (
+                <span className="text-xs">{baseline.guardrails.range || "Enabled"}</span>
+              ) : (
+                <span className="text-muted-foreground text-xs">Disabled</span>
+              )}
+            </td>
+            <td className="px-3 py-2 text-center">
+              {isLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin mx-auto" />
+              ) : whatIf?.guardrails.enabled ? (
+                <span className="text-xs">{whatIf.guardrails.range || "Enabled"}</span>
+              ) : (
+                <span className="text-muted-foreground text-xs">Disabled</span>
+              )}
+            </td>
+            <td className="px-3 py-2 text-center">
+              {whatIf && whatIf.guardrails.enabled !== baseline.guardrails.enabled ? (
+                whatIf.guardrails.enabled ? (
+                  <span className="text-green-500 text-xs">Enabled</span>
+                ) : (
+                  <span className="text-muted-foreground text-xs">Disabled</span>
+                )
+              ) : whatIf?.guardrails.range !== baseline.guardrails.range ? (
+                <span className="text-yellow-500 text-xs">Wider</span>
+              ) : (
+                <span className="text-muted-foreground text-xs">—</span>
+              )}
+            </td>
+          </tr>
+
+          {/* Monte Carlo */}
+          <tr>
+            <td className="px-3 py-2">
+              <div className="flex items-center gap-2">
+                <Dices className="w-4 h-4 text-purple-500" />
+                <span>Monte Carlo</span>
+              </div>
+            </td>
+            <td className="px-3 py-2 text-center">
+              <span className={cn(
+                "font-medium",
+                baseline.monteCarlo.successRate >= 0.9 ? "text-green-500" :
+                baseline.monteCarlo.successRate >= 0.7 ? "text-yellow-500" : "text-red-500"
+              )}>
+                {formatPercent(baseline.monteCarlo.successRate)}
+              </span>
+            </td>
+            <td className="px-3 py-2 text-center">
+              {isLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin mx-auto" />
+              ) : whatIf ? (
+                <span className={cn(
+                  "font-medium",
+                  whatIf.monteCarlo.successRate >= 0.9 ? "text-green-500" :
+                  whatIf.monteCarlo.successRate >= 0.7 ? "text-yellow-500" : "text-red-500"
+                )}>
+                  {formatPercent(whatIf.monteCarlo.successRate)}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
+            </td>
+            <td className="px-3 py-2 text-center">
+              {whatIf && (
+                <div className="flex items-center justify-center gap-1">
+                  {getChangeIndicator(baseline.monteCarlo.successRate, whatIf.monteCarlo.successRate)}
+                  <span className={cn(
+                    "text-xs",
+                    (whatIf.monteCarlo.successRate - baseline.monteCarlo.successRate) > 0 ? "text-green-500" :
+                    (whatIf.monteCarlo.successRate - baseline.monteCarlo.successRate) < 0 ? "text-red-500" : "text-muted-foreground"
+                  )}>
+                    {((whatIf.monteCarlo.successRate - baseline.monteCarlo.successRate) * 100).toFixed(1)}%
+                  </span>
+                </div>
+              )}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function WhatIfCalculator({
   baseline,
   onRunWhatIf,
@@ -132,7 +339,7 @@ export function WhatIfCalculator({
   const [retirementAge, setRetirementAge] = useState(baseline.retirementAge);
   const [planToAge, setPlanToAge] = useState(baseline.planToAge);
   const [ssClaimingAge, setSsClaimingAge] = useState(baseline.ssClaimingAge ?? 67);
-  const [guardrailsEnabled, setGuardrailsEnabled] = useState(false);
+  const [guardrailsEnabled, setGuardrailsEnabled] = useState(baseline.guardrailsEnabled ?? false);
 
   // Results
   const [whatIfResult, setWhatIfResult] = useState<{
@@ -146,23 +353,52 @@ export function WhatIfCalculator({
     retirementAge !== baseline.retirementAge ||
     planToAge !== baseline.planToAge ||
     (baseline.ssClaimingAge && ssClaimingAge !== baseline.ssClaimingAge) ||
-    guardrailsEnabled;
+    guardrailsEnabled !== (baseline.guardrailsEnabled ?? false);
 
   // Track previous hasChanges to avoid unnecessary setState
   const prevHasChanges = useRef(hasChanges);
 
+  // Calculate what-if standard projection
+  const whatIfStandardProjection = useMemo(() => {
+    if (!baseline.currentNetWorth || !baseline.currentAge) return null;
+
+    return calculateProjection({
+      currentNetWorth: baseline.currentNetWorth,
+      annualSpending: spending,
+      currentAge: baseline.currentAge,
+      retirementAge: retirementAge,
+      lifeExpectancy: planToAge,
+    });
+  }, [baseline.currentNetWorth, baseline.currentAge, spending, retirementAge, planToAge]);
+
+  // Calculate baseline standard projection
+  const baselineStandardProjection = useMemo(() => {
+    if (!baseline.currentNetWorth || !baseline.currentAge) return null;
+
+    return calculateProjection({
+      currentNetWorth: baseline.currentNetWorth,
+      annualSpending: baseline.annualSpending,
+      currentAge: baseline.currentAge,
+      retirementAge: baseline.retirementAge,
+      lifeExpectancy: baseline.planToAge,
+    });
+  }, [baseline]);
+
   // Auto-run simulation when parameters change (debounced)
   useEffect(() => {
-    // Only clear result if hasChanges transitioned from true to false
-    if (!hasChanges && prevHasChanges.current) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setWhatIfResult(null);
-      prevHasChanges.current = hasChanges;
-      return;
-    }
+    // Track transition from changes to no changes
+    const wasChanged = prevHasChanges.current;
     prevHasChanges.current = hasChanges;
 
+    // If no changes, potentially clear result via timeout (not synchronous)
     if (!hasChanges) {
+      if (wasChanged) {
+        // Schedule the clear to avoid synchronous setState
+        const clearTimer = setTimeout(() => {
+          setWhatIfResult(null);
+        }, 0);
+        return () => clearTimeout(clearTimer);
+      }
       return;
     }
 
@@ -174,7 +410,9 @@ export function WhatIfCalculator({
       if (baseline.ssClaimingAge && ssClaimingAge !== baseline.ssClaimingAge) {
         params.ssClaimingAge = ssClaimingAge;
       }
-      if (guardrailsEnabled) params.guardrailsEnabled = true;
+      if (guardrailsEnabled !== (baseline.guardrailsEnabled ?? false)) {
+        params.guardrailsEnabled = guardrailsEnabled;
+      }
 
       try {
         const result = await onRunWhatIf(params);
@@ -192,7 +430,7 @@ export function WhatIfCalculator({
     setRetirementAge(baseline.retirementAge);
     setPlanToAge(baseline.planToAge);
     setSsClaimingAge(baseline.ssClaimingAge ?? 67);
-    setGuardrailsEnabled(false);
+    setGuardrailsEnabled(baseline.guardrailsEnabled ?? false);
     setWhatIfResult(null);
   };
 
@@ -206,7 +444,9 @@ export function WhatIfCalculator({
     if (baseline.ssClaimingAge && ssClaimingAge !== baseline.ssClaimingAge) {
       params.ssClaimingAge = ssClaimingAge;
     }
-    if (guardrailsEnabled) params.guardrailsEnabled = true;
+    if (guardrailsEnabled !== (baseline.guardrailsEnabled ?? false)) {
+      params.guardrailsEnabled = guardrailsEnabled;
+    }
 
     await onSaveAsBaseline(params);
   };
@@ -214,6 +454,41 @@ export function WhatIfCalculator({
   const successDiff = whatIfResult
     ? whatIfResult.successRate - baseline.successRate
     : 0;
+
+  // Build comparison data for the table
+  const comparisonBaseline = {
+    standard: {
+      status: baseline.standardStatus ?? baselineStandardProjection?.status ?? "on_track",
+      fundsTo: baselineStandardProjection?.expectedRunsOutAge
+        ? `Age ${baselineStandardProjection.expectedRunsOutAge}`
+        : `${PROJECTION_DEFAULTS.lifeExpectancy}+`,
+    },
+    guardrails: {
+      enabled: baseline.guardrailsEnabled ?? false,
+      range: baseline.guardrailsSpendingRange
+        ? `${formatCurrency(baseline.guardrailsSpendingRange.min)}-${formatCurrency(baseline.guardrailsSpendingRange.max)}`
+        : undefined,
+    },
+    monteCarlo: {
+      successRate: baseline.successRate,
+    },
+  };
+
+  const comparisonWhatIf = whatIfResult ? {
+    standard: {
+      status: whatIfStandardProjection?.status ?? "on_track",
+      fundsTo: whatIfStandardProjection?.expectedRunsOutAge
+        ? `Age ${whatIfStandardProjection.expectedRunsOutAge}`
+        : `${planToAge}+`,
+    },
+    guardrails: {
+      enabled: guardrailsEnabled,
+      range: guardrailsEnabled ? "Varies" : undefined,
+    },
+    monteCarlo: {
+      successRate: whatIfResult.successRate,
+    },
+  } : null;
 
   return (
     <Card>
@@ -243,7 +518,7 @@ export function WhatIfCalculator({
             <p className="text-3xl font-bold">
               {formatPercent(baseline.successRate)}
             </p>
-            <p className="text-xs text-muted-foreground">success rate</p>
+            <p className="text-xs text-muted-foreground">Monte Carlo success</p>
           </div>
           <div className="text-center">
             <p className="text-sm text-muted-foreground mb-1">What-If</p>
@@ -278,6 +553,18 @@ export function WhatIfCalculator({
             )}
           </div>
         </div>
+
+        {/* 3-Model Comparison Table */}
+        {(baseline.currentNetWorth || baseline.standardStatus) && (
+          <div>
+            <h4 className="text-sm font-medium mb-3">Impact on All Models</h4>
+            <ModelComparisonTable
+              baseline={comparisonBaseline}
+              whatIf={comparisonWhatIf}
+              isLoading={isLoading && hasChanges}
+            />
+          </div>
+        )}
 
         {/* Sliders */}
         <div className="space-y-6">

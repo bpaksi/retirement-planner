@@ -11,6 +11,7 @@ import {
   XCircle,
   Wallet,
   Clock,
+  Shield,
 } from "lucide-react";
 
 interface MonteCarloSummaryProps {
@@ -33,6 +34,11 @@ interface MonteCarloSummaryProps {
   inputs: {
     portfolioValue: number;
     annualSpending: number;
+    // NEW: Spending breakdown fields
+    baseLivingExpense?: number;
+    totalGoalsAmount?: number;
+    essentialFloor?: number;
+    hasGuardrails?: boolean;
     years: number;
     retirementAge?: number;
     planToAge?: number;
@@ -133,6 +139,11 @@ export function MonteCarloSummary({
             </p>
             <p className="text-xs text-muted-foreground">
               {formatCurrency(inputs.annualSpending)}/yr
+              {inputs.baseLivingExpense !== undefined && inputs.totalGoalsAmount !== undefined && (
+                <span className="ml-1">
+                  ({formatCurrency(inputs.baseLivingExpense)} base + {formatCurrency(inputs.totalGoalsAmount)} goals)
+                </span>
+              )}
             </p>
           </CardContent>
         </Card>
@@ -190,6 +201,24 @@ export function MonteCarloSummary({
             </p>
           </CardContent>
         </Card>
+
+        {/* Essential Floor (if guardrails enabled) */}
+        {inputs.hasGuardrails && inputs.essentialFloor && (
+          <Card className="border-emerald-500/20 bg-emerald-500/5">
+            <CardContent className="pt-4 pb-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Shield className="w-4 h-4 text-emerald-500" />
+                <span className="text-sm text-muted-foreground">Essential Floor</span>
+              </div>
+              <p className="text-2xl font-semibold text-emerald-500">
+                {formatCurrency(inputs.essentialFloor)}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                protected minimum
+              </p>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* Spending Comparison (if max withdrawal available) */}

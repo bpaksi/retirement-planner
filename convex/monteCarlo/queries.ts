@@ -6,23 +6,29 @@ import { query } from "../_generated/server";
  */
 function generateInputsHash(inputs: {
   portfolioValue: number;
-  annualSpending: number;
+  baseLivingExpense: number;
+  totalGoalsAmount: number;
+  essentialFloor: number;
   retirementAge: number | null;
   planToAge: number;
   realReturn: number;
   volatility: number;
   socialSecurityAmount?: number | null;
   guardrailsEnabled?: boolean;
+  spendingCeiling?: number | null;
 }): string {
   return [
     Math.round(inputs.portfolioValue / 1000), // Round to nearest $1k
-    Math.round(inputs.annualSpending / 100), // Round to nearest $100
+    Math.round(inputs.baseLivingExpense / 100), // Round to nearest $100
+    Math.round(inputs.totalGoalsAmount / 100),
+    Math.round(inputs.essentialFloor / 100),
     inputs.retirementAge ?? 0,
     inputs.planToAge,
     Math.round(inputs.realReturn * 1000),
     Math.round(inputs.volatility * 1000),
     Math.round((inputs.socialSecurityAmount ?? 0) / 100),
     inputs.guardrailsEnabled ? 1 : 0,
+    Math.round((inputs.spendingCeiling ?? 0) / 100),
   ].join("-");
 }
 
@@ -82,6 +88,8 @@ export const getAssumptionsWithDefaults = query({
 /**
  * Get all inputs needed to run a Monte Carlo simulation.
  * Combines data from multiple tables into a single query.
+ *
+ * NEW: Includes spending breakdown (base + goals) for integrated guardrails.
  */
 export const getSimulationInputs = query({
   args: {},
@@ -97,6 +105,9 @@ export const getSimulationInputs = query({
 
     // Get guardrails config
     const guardrails = await ctx.db.query("guardrailsConfig").first();
+
+    // Get annual budgets (goals)
+    const annualBudgets = await ctx.db.query("annualBudgets").collect();
 
     // Calculate current portfolio value
     const holdings = await ctx.db.query("holdings").collect();
@@ -134,6 +145,7 @@ export const getSimulationInputs = query({
     // Calculate current age if profile exists
     let currentAge: number | null = null;
     let retirementAge: number | null = null;
+    let retirementYear: number | null = null;
     if (profile) {
       currentAge = profile.currentAge;
       const retireDate = new Date(profile.retirementDate);
@@ -141,6 +153,7 @@ export const getSimulationInputs = query({
       const yearsUntil =
         (retireDate.getTime() - now.getTime()) / (365.25 * 24 * 60 * 60 * 1000);
       retirementAge = Math.round(currentAge + yearsUntil);
+      retirementYear = retireDate.getFullYear();
     }
 
     // Calculate Social Security claiming details
@@ -164,6 +177,48 @@ export const getSimulationInputs = query({
       };
     }
 
+    // ========================================
+    // SPENDING BREAKDOWN
+    // ========================================
+
+    // Determine base living expense
+    // Priority: monthlyBaseLivingExpense > annualSpending (legacy)
+    let baseLivingExpense: number;
+    if (profile?.monthlyBaseLivingExpense !== undefined) {
+      baseLivingExpense = profile.monthlyBaseLivingExpense * 12;
+    } else {
+      baseLivingExpense = profile?.annualSpending ?? 0;
+    }
+
+    // Convert annual budgets to goals format for the simulation engine
+    // Convert calendar years to year-index (0 = first year of retirement)
+    const goals = annualBudgets.map((budget) => ({
+      _id: budget._id.toString(),
+      name: budget.name,
+      annualAmount: budget.annualAmount,
+      isEssential: budget.isEssential ?? false,
+      // Convert calendar year to simulation year (0-indexed from retirement)
+      startYear: budget.startYear && retirementYear
+        ? Math.max(0, budget.startYear - retirementYear)
+        : undefined,
+      endYear: budget.endYear && retirementYear
+        ? Math.max(0, budget.endYear - retirementYear)
+        : undefined,
+    }));
+
+    // Calculate totals
+    const totalGoalsAmount = goals.reduce((sum, g) => sum + g.annualAmount, 0);
+    const essentialGoalsAmount = goals
+      .filter((g) => g.isEssential)
+      .reduce((sum, g) => sum + g.annualAmount, 0);
+    const discretionaryGoalsAmount = goals
+      .filter((g) => !g.isEssential)
+      .reduce((sum, g) => sum + g.annualAmount, 0);
+
+    const totalAnnualSpending = baseLivingExpense + totalGoalsAmount;
+    const essentialFloor = baseLivingExpense + essentialGoalsAmount;
+    const discretionaryAmount = discretionaryGoalsAmount;
+
     // Format guardrails for simulation
     let guardrailsInput = null;
     if (guardrails?.isEnabled) {
@@ -176,6 +231,9 @@ export const getSimulationInputs = query({
       };
     }
 
+    // Use calculated essential floor, or fallback to manual spending floor if set
+    const simulationEssentialFloor = guardrails?.spendingFloor ?? essentialFloor;
+
     return {
       // Portfolio
       portfolioValue,
@@ -185,7 +243,20 @@ export const getSimulationInputs = query({
       // Profile
       currentAge,
       retirementAge,
-      annualSpending: profile?.annualSpending ?? 0,
+      retirementYear,
+
+      // SPENDING BREAKDOWN (NEW)
+      baseLivingExpense,
+      goals,
+      totalGoalsAmount,
+      essentialGoalsAmount,
+      discretionaryGoalsAmount,
+      totalAnnualSpending,
+      essentialFloor,
+      discretionaryAmount,
+
+      // Legacy (for backwards compatibility)
+      annualSpending: totalAnnualSpending,
 
       // Monte Carlo assumptions
       realReturn: assumptions?.realReturn ?? MONTE_CARLO_DEFAULTS.realReturn,
@@ -211,19 +282,27 @@ export const getSimulationInputs = query({
 
       // Guardrails
       guardrails: guardrailsInput,
-      essentialFloor: guardrails?.spendingFloor,
+      guardrailsConfig: guardrails ? {
+        isEnabled: guardrails.isEnabled,
+        spendingFloor: guardrails.spendingFloor,
+        spendingCeiling: guardrails.spendingCeiling,
+      } : null,
+
+      // Essential floor for simulation (calculated or manual override)
+      simulationEssentialFloor,
+      spendingCeiling: guardrails?.spendingCeiling,
 
       // Validation
       isReady:
         portfolioValue > 0 &&
         currentAge !== null &&
         retirementAge !== null &&
-        (profile?.annualSpending ?? 0) > 0,
+        totalAnnualSpending > 0,
       missingInputs: [
         portfolioValue <= 0 ? "portfolio value" : null,
         currentAge === null ? "current age" : null,
         retirementAge === null ? "retirement age" : null,
-        (profile?.annualSpending ?? 0) <= 0 ? "annual spending" : null,
+        totalAnnualSpending <= 0 ? "annual spending" : null,
       ].filter(Boolean) as string[],
     };
   },
@@ -243,6 +322,7 @@ export const getCachedResults = query({
     const profile = await ctx.db.query("retirementProfile").first();
     const ss = await ctx.db.query("socialSecurity").first();
     const guardrails = await ctx.db.query("guardrailsConfig").first();
+    const annualBudgets = await ctx.db.query("annualBudgets").collect();
 
     // Calculate portfolio value (simplified)
     const holdings = await ctx.db.query("holdings").collect();
@@ -262,10 +342,24 @@ export const getCachedResults = query({
       retirementAge = Math.round(profile.currentAge + yearsUntil);
     }
 
+    // Calculate spending breakdown
+    const baseLivingExpense = profile?.monthlyBaseLivingExpense
+      ? profile.monthlyBaseLivingExpense * 12
+      : profile?.annualSpending ?? 0;
+
+    const totalGoalsAmount = annualBudgets.reduce((sum, b) => sum + b.annualAmount, 0);
+    const essentialGoalsAmount = annualBudgets
+      .filter((b) => b.isEssential)
+      .reduce((sum, b) => sum + b.annualAmount, 0);
+
+    const essentialFloor = baseLivingExpense + essentialGoalsAmount;
+
     // Generate hash from current inputs
     const inputsHash = generateInputsHash({
       portfolioValue,
-      annualSpending: profile?.annualSpending ?? 0,
+      baseLivingExpense,
+      totalGoalsAmount,
+      essentialFloor,
       retirementAge,
       planToAge: assumptions?.planToAge ?? 95,
       realReturn: assumptions?.realReturn ?? 0.05,
@@ -278,6 +372,7 @@ export const getCachedResults = query({
               : ss.benefitAt67) * 12
         : null,
       guardrailsEnabled: guardrails?.isEnabled ?? false,
+      spendingCeiling: guardrails?.spendingCeiling,
     });
 
     // Look up cached results
@@ -314,6 +409,7 @@ export const getInputsHash = query({
     const profile = await ctx.db.query("retirementProfile").first();
     const ss = await ctx.db.query("socialSecurity").first();
     const guardrails = await ctx.db.query("guardrailsConfig").first();
+    const annualBudgets = await ctx.db.query("annualBudgets").collect();
 
     const holdings = await ctx.db.query("holdings").collect();
     let portfolioValue = 0;
@@ -331,9 +427,23 @@ export const getInputsHash = query({
       retirementAge = Math.round(profile.currentAge + yearsUntil);
     }
 
+    // Calculate spending breakdown
+    const baseLivingExpense = profile?.monthlyBaseLivingExpense
+      ? profile.monthlyBaseLivingExpense * 12
+      : profile?.annualSpending ?? 0;
+
+    const totalGoalsAmount = annualBudgets.reduce((sum, b) => sum + b.annualAmount, 0);
+    const essentialGoalsAmount = annualBudgets
+      .filter((b) => b.isEssential)
+      .reduce((sum, b) => sum + b.annualAmount, 0);
+
+    const essentialFloor = baseLivingExpense + essentialGoalsAmount;
+
     return generateInputsHash({
       portfolioValue,
-      annualSpending: profile?.annualSpending ?? 0,
+      baseLivingExpense,
+      totalGoalsAmount,
+      essentialFloor,
       retirementAge,
       planToAge: assumptions?.planToAge ?? 95,
       realReturn: assumptions?.realReturn ?? 0.05,
@@ -346,6 +456,7 @@ export const getInputsHash = query({
               : ss.benefitAt67) * 12
         : null,
       guardrailsEnabled: guardrails?.isEnabled ?? false,
+      spendingCeiling: guardrails?.spendingCeiling,
     });
   },
 });

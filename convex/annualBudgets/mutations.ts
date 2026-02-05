@@ -8,6 +8,7 @@ export const create = mutation({
     startYear: v.optional(v.number()),
     endYear: v.optional(v.number()),
     notes: v.optional(v.string()),
+    isEssential: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("annualBudgets", {
@@ -16,6 +17,7 @@ export const create = mutation({
       startYear: args.startYear,
       endYear: args.endYear,
       notes: args.notes,
+      isEssential: args.isEssential ?? false,
       createdAt: Date.now(),
     });
   },
@@ -29,6 +31,7 @@ export const update = mutation({
     startYear: v.optional(v.number()),
     endYear: v.optional(v.number()),
     notes: v.optional(v.string()),
+    isEssential: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const { id, ...updates } = args;
